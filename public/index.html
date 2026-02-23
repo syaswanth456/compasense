@@ -283,6 +283,11 @@
       box-shadow: 0 6px 12px -6px rgba(20, 184, 166, 0.5);
     }
 
+    .pill:hover:not(.active) {
+      background: #e2e8f0;
+      color: #0f172a;
+    }
+
     .time-pills {
       display: flex;
       gap: 8px;
@@ -293,6 +298,27 @@
       width: 100%;
       height: 320px;
       overflow: hidden;
+      position: relative;
+    }
+
+    .no-data-message {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #94a3b8;
+      font-size: 1rem;
+      font-weight: 500;
+      background: rgba(255,255,255,0.8);
+      padding: 12px 24px;
+      border-radius: 40px;
+      backdrop-filter: blur(4px);
+      z-index: 10;
+      display: none;
+    }
+
+    .chart-container.empty .no-data-message {
+      display: block;
     }
 
     /* --- modal base (reused) --- */
@@ -698,7 +724,9 @@
       <button class="pill active" data-range="24h">24 hr</button>
     </div>
     <!-- chart container -->
-    <div id="trend-chart" class="chart-container"></div>
+    <div id="trend-chart" class="chart-container">
+      <div class="no-data-message">No data available</div>
+    </div>
   </div>
 </div>
 
@@ -890,7 +918,7 @@
       }
     }
 
-    // ----- refresh graph with real data -----
+    // ----- refresh graph with real data (enhanced) -----
     async function refreshGraph() {
       try {
         const graphArray = await fetchGraphData(currentMetric, currentRange);
@@ -898,56 +926,91 @@
         let seriesData = [];
 
         if (graphArray && Array.isArray(graphArray) && graphArray.length > 0) {
+          // Format x-axis labels based on range for better readability
+          const formatOptions = currentRange === '5m' ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } :
+                               currentRange === '1h' ? { hour: '2-digit', minute: '2-digit' } :
+                               { hour: '2-digit', minute: '2-digit' }; // for 24h maybe show day? but we keep hour/minute
           categories = graphArray.map(item => {
             const d = new Date(item.created_at);
-            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            return d.toLocaleTimeString([], formatOptions);
           });
           seriesData = graphArray.map(item => item.value);
+          chartEl.classList.remove('empty');
+        } else {
+          chartEl.classList.add('empty');
         }
 
         const series = [{ name: currentMetric.replace('_', ' ').toUpperCase(), data: seriesData }];
 
+        // Common options
+        const baseOptions = {
+          chart: {
+            type: 'area',
+            height: '100%',
+            parentHeightOffset: 0,
+            toolbar: { show: false },
+            zoom: { enabled: false },
+            animations: {
+              enabled: true,
+              easing: 'easeinout',
+              speed: 800,
+              animateGradually: { enabled: true, delay: 150 },
+              dynamicAnimation: { enabled: true, speed: 350 }
+            }
+          },
+          series: series,
+          xaxis: {
+            categories: categories,
+            labels: { 
+              style: { colors: '#64748b', fontSize: '12px' },
+              rotate: 0,
+              trim: true,
+              maxHeight: 60,
+            },
+            axisBorder: { show: false },
+            axisTicks: { show: false },
+            tickAmount: currentRange === '24h' ? 6 : (currentRange === '1h' ? 6 : 6), // control label density
+          },
+          yaxis: {
+            labels: { style: { colors: '#64748b', fontSize: '12px' } },
+            forceNiceScale: true,
+            tickAmount: 5,
+            decimalsInFloat: 1,
+            min: (min) => min - (min * 0.1), // add 10% padding below
+            max: (max) => max + (max * 0.1), // add 10% padding above
+          },
+          stroke: { curve: 'smooth', width: 3, colors: ['#14b8a6'], lineCap: 'round' },
+          fill: {
+            type: 'gradient',
+            gradient: { shadeIntensity: 1, opacityFrom: 0.3, opacityTo: 0.1, stops: [0, 90, 100] }
+          },
+          grid: {
+            borderColor: '#e2e8f0',
+            strokeDashArray: 4,
+            padding: { top: 25, right: 20, bottom: 25, left: 15 },
+            xaxis: { lines: { show: true } },
+            yaxis: { lines: { show: true } }
+          },
+          tooltip: { 
+            theme: 'light',
+            x: { format: 'HH:mm:ss' },
+            y: { formatter: (value) => value?.toFixed?.(2) ?? '--' }
+          },
+          colors: ['#14b8a6'],
+          dataLabels: { enabled: false },
+          markers: { size: 0, hover: { size: 4 } }
+        };
+
         if (chart) {
-          chart.updateOptions({ xaxis: { categories } });
+          chart.updateOptions(baseOptions);
           chart.updateSeries(series);
         } else {
-          const options = {
-            chart: {
-              type: 'area',
-              height: '100%',
-              parentHeightOffset: 0,
-              toolbar: { show: false },
-              zoom: { enabled: false }
-            },
-            series: series,
-            xaxis: {
-              categories: categories,
-              labels: { style: { colors: '#64748b' } }
-            },
-            yaxis: {
-              labels: { style: { colors: '#64748b' } },
-              forceNiceScale: true,
-              tickAmount: 5
-            },
-            stroke: { curve: 'smooth', width: 3, colors: ['#14b8a6'] },
-            fill: {
-              type: 'gradient',
-              gradient: { shadeIntensity: 1, opacityFrom: 0.3, opacityTo: 0.1, stops: [0, 90, 100] }
-            },
-            grid: {
-              borderColor: '#e2e8f0',
-              strokeDashArray: 4,
-              padding: { top: 25, right: 25, bottom: 25, left: 25 }
-            },
-            tooltip: { theme: 'light' },
-            colors: ['#14b8a6'],
-            dataLabels: { enabled: false }
-          };
-          chart = new ApexCharts(chartEl, options);
+          chart = new ApexCharts(chartEl, baseOptions);
           await chart.render();
         }
       } catch (e) {
         console.warn('graph refresh failed', e);
+        chartEl.classList.add('empty');
       }
     }
 
@@ -997,7 +1060,6 @@
     const suggestBtn = document.getElementById('suggestBtn');
     const resetBtn = document.getElementById('resetBtn');
 
-    // Fetch thresholds from API when opening modal
     async function openSettingsModal() {
       settingsModal.classList.add('active');
       saveThresholdsBtn.disabled = true;
@@ -1036,7 +1098,6 @@
     });
 
     suggestBtn.addEventListener('click', () => {
-      // mock suggestion based on 24h history; keep as is
       thAqi.value = 380 + Math.floor(Math.random() * 100);
       thUv.value = (5 + Math.random() * 3).toFixed(1);
       thBmp.value = (26 + Math.random() * 4).toFixed(1);
@@ -1099,13 +1160,11 @@
       rate: 'immediate'
     };
 
-    // Fetch notification preferences on page load
     async function loadReportTimes() {
       try {
         const response = await fetch('/api/get-report-time');
         if (!response.ok) throw new Error('Failed to fetch report times');
         const data = await response.json();
-        // Assuming API returns { report_times: array, rate: string }
         notifPrefs.times = data.report_times || ['09:00', '12:00', '18:00'];
         notifPrefs.rate = data.rate || 'immediate';
       } catch (err) {
@@ -1113,13 +1172,11 @@
       }
     }
 
-    // Fetch unread notifications count
     async function fetchNotificationCount() {
       try {
         const response = await fetch('/api/notifications');
         if (!response.ok) throw new Error('Failed to fetch notifications');
         const data = await response.json();
-        // Assuming API returns { unread: number } or an array with unread count
         const count = data.unread || (Array.isArray(data) ? data.length : 0);
         if (count > 0) {
           notificationBadge.style.display = 'flex';
@@ -1133,7 +1190,6 @@
       }
     }
 
-    // render time inputs from notifPrefs.times
     function renderTimeInputs() {
       timeInputsContainer.innerHTML = '';
       notifPrefs.times.forEach((time, index) => {
@@ -1175,7 +1231,6 @@
     }
 
     async function openNotificationModal() {
-      // Refresh prefs from server before opening
       await loadReportTimes();
       notificationModal.classList.add('active');
       renderTimeInputs();
@@ -1188,7 +1243,6 @@
 
     notificationsBtn.addEventListener('click', async () => {
       await openNotificationModal();
-      // Also fetch fresh notification count on open
       fetchNotificationCount();
     });
 
@@ -1219,7 +1273,7 @@
           body: JSON.stringify(payload)
         });
         if (!response.ok) throw new Error('Save failed');
-        notifPrefs.rate = payload.rate; // update local
+        notifPrefs.rate = payload.rate;
         showToast('Notification preferences saved', 'success');
         closeNotificationModal();
       } catch (err) {
@@ -1234,11 +1288,10 @@
     window.addEventListener('load', async () => {
       await refreshAllData();
       await refreshGraph();
-      await loadReportTimes(); // preload times for next modal open
-      await fetchNotificationCount(); // initial badge
+      await loadReportTimes();
+      await fetchNotificationCount();
       setInterval(refreshAllData, 7000);
       setInterval(refreshGraph, 15000);
-      // Optionally refresh badge occasionally (e.g., every 60s)
       setInterval(fetchNotificationCount, 60000);
     });
 
