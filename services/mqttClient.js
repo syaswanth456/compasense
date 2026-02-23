@@ -1,126 +1,104 @@
-// services/mqttClient.js
+// =====================================================
+// MQTT Client (HiveMQ Cloud - Production)
+// =====================================================
 
 const mqtt = require('mqtt');
-const { insertSensorData } = require('./supabaseClient');
-require('dotenv').config();
+const {
+  insertSensorData,
+  insertWebNotification
+} = require('./supabaseClient');
 
-function startMqttClient(alertingEngine) {
-  console.log("🔐 Connecting to Secure MQTT Broker...");
+let client = null;
 
-  // ===============================
-  // MQTT OPTIONS (PRODUCTION SAFE)
-  // ===============================
-  const options = {
-    username: process.env.MQTT_USERNAME,
-    password: process.env.MQTT_PASSWORD,
-    keepalive: 60,
-    reconnectPeriod: 5000, // auto reconnect
-    connectTimeout: 30 * 1000,
-    clean: true,
-  };
+function startMqttClient() {
+  try {
+    const brokerUrl = process.env.MQTT_BROKER_URL;
+    const username = process.env.MQTT_USERNAME;
+    const password = process.env.MQTT_PASSWORD;
+    const topic = process.env.MQTT_TOPIC || '#';
 
-  if (!process.env.MQTT_BROKER_URL) {
-    console.error("❌ FATAL: MQTT_BROKER_URL not defined!");
-    return;
-  }
-
-  const client = mqtt.connect(process.env.MQTT_BROKER_URL, options);
-
-  // ===============================
-  // CONNECT
-  // ===============================
-  client.on('connect', () => {
-    console.log("✅ MQTT Connected!");
-
-    const topic = process.env.MQTT_TOPIC;
-
-    if (!topic) {
-      console.error("❌ FATAL: MQTT_TOPIC not defined!");
+    if (!brokerUrl) {
+      console.warn("⚠️ MQTT URL missing — MQTT disabled");
       return;
     }
 
-    client.subscribe(topic, { qos: 1 }, (err) => {
-      if (err) {
-        console.error("❌ MQTT Subscribe failed:", err);
-      } else {
-        console.log(`📡 Subscribed to: ${topic}`);
+    console.log("📡 Connecting to MQTT broker...");
+
+    client = mqtt.connect(brokerUrl, {
+      username,
+      password,
+      reconnectPeriod: 5000,
+      connectTimeout: 30 * 1000,
+      clean: true
+    });
+
+    // ===============================
+    // CONNECT
+    // ===============================
+    client.on('connect', () => {
+      console.log("✅ MQTT Connected");
+
+      client.subscribe(topic, err => {
+        if (err) {
+          console.error("❌ MQTT subscribe error:", err.message);
+        } else {
+          console.log("📡 Subscribed to:", topic);
+        }
+      });
+    });
+
+    // ===============================
+    // MESSAGE
+    // ===============================
+    client.on('message', async (topic, payload) => {
+      try {
+        const raw = payload.toString();
+        console.log("📨 MQTT message received");
+
+        const r = JSON.parse(raw);
+
+        // 🔥 Map ESP → DB
+        const dataToInsert = {
+          bmp_temp: r.bmp_temp ?? null,
+          dht_temp: r.dht_temp ?? null,
+          humidity: r.humidity ?? null,
+          pressure: r.pressure ?? null,
+          co2_ppm: r.co2_ppm ?? null,
+          uv_index: r.uv_index ?? null,
+          light_pcnt: r.light_pcnt ?? null,
+          rain_pcnt: r.rain_pcnt ?? null
+        };
+
+        const ok = await insertSensorData(dataToInsert);
+
+        // 🔔 Create web notification on success
+        if (ok) {
+          await insertWebNotification(
+            "New Sensor Reading",
+            "Fresh environmental data received",
+            "info"
+          );
+        }
+
+      } catch (err) {
+        console.error("❌ MQTT message error:", err.message);
       }
     });
-  });
 
-  // ===============================
-  // MESSAGE HANDLER
-  // ===============================
-  client.on('message', async (topic, payload) => {
-    try {
-      if (!payload) return;
+    // ===============================
+    // ERROR HANDLING
+    // ===============================
+    client.on('error', err => {
+      console.error("❌ MQTT error:", err.message);
+    });
 
-      let readings;
+    client.on('close', () => {
+      console.warn("⚠️ MQTT connection closed — retrying...");
+    });
 
-      // 🔒 Safe JSON parse
-      try {
-        readings = JSON.parse(payload.toString());
-      } catch (parseErr) {
-        console.error("❌ Invalid JSON payload:", parseErr);
-        return;
-      }
-
-      const location = topic.split('/').pop() || "unknown";
-
-      // ===============================
-      // NORMALIZE DATA
-      // ===============================
-      const dataToInsert = {
-        location,
-        bmp_temp: Number(readings.bmp_temp) || null,
-        dht_temp: Number(readings.dht_temp) || null,
-        humidity: Number(readings.humidity) || null,
-        pressure: Number(readings.pressure) || null,
-        aqi: Number(readings.co2_ppm) || null,
-        uv: Number(readings.uv_index) || null,
-        light_level: Number(readings.light_pcnt) || null,
-        rain_percentage: Number(readings.rain_pcnt) || null
-      };
-
-      // ===============================
-      // INSERT TO DB
-      // ===============================
-      const success = await insertSensorData(dataToInsert);
-
-      // ===============================
-      // ALERT ENGINE
-      // ===============================
-      if (
-        success &&
-        alertingEngine &&
-        typeof alertingEngine.checkForAlerts === 'function'
-      ) {
-        alertingEngine.checkForAlerts(dataToInsert);
-      }
-
-    } catch (e) {
-      console.error('❌ MQTT message processing error:', e);
-    }
-  });
-
-  // ===============================
-  // ERROR HANDLING
-  // ===============================
-  client.on('reconnect', () => {
-    console.log("🔄 MQTT Reconnecting...");
-  });
-
-  client.on('close', () => {
-    console.warn("⚠️ MQTT connection closed.");
-  });
-
-  client.on('offline', () => {
-    console.warn("📴 MQTT offline.");
-  });
-
-  client.on('error', (e) => {
-    console.error("❌ MQTT Error:", e.message);
-  });
+  } catch (err) {
+    console.error("❌ MQTT start failed:", err.message);
+  }
 }
 
 module.exports = { startMqttClient };
