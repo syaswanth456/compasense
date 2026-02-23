@@ -1,321 +1,1255 @@
-// services/supabaseClient.js
-
-const { createClient } = require('@supabase/supabase-js');
-require('dotenv').config();
-
-// ===============================
-// ENV VALIDATION
-// ===============================
-
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
-  console.error("❌ FATAL: Supabase environment variables missing");
-}
-
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY,
-  {
-    auth: { persistSession: false }
-  }
-);
-
-// ===============================
-// SENSOR READINGS
-// ===============================
-
-async function insertSensorData(data) {
-  try {
-    const { error } = await supabase
-      .from('sensor_readings')
-      .insert([data]);
-
-    if (error) {
-      console.error('❌ Supabase Insert Error:', error.message);
-      return false;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.5">
+  <title>CampusSense · Smart Campus Dashboard</title>
+  <!-- Fonts & Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400..700;1,14..32,400..700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  <!-- ApexCharts -->
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
     }
 
-    return true;
-  } catch (err) {
-    console.error('❌ Insert crash:', err);
-    return false;
-  }
-}
-
-async function getLatestSensorData() {
-  try {
-    const { data, error } = await supabase
-      .from('sensor_readings')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) {
-      console.error('❌ Supabase Latest Error:', error.message);
-      return null;
+    body {
+      background-color: #f3f4f6;
+      font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      color: #1e293b;
+      line-height: 1.4;
+      padding: 24px;
+      min-height: 100vh;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
     }
 
-    return data;
-  } catch (err) {
-    console.error('❌ Latest fetch crash:', err);
-    return null;
-  }
-}
-
-async function getHistoricalData(type, range) {
-  try {
-    const now = new Date();
-    let startTime;
-
-    switch (range) {
-      case '5m':
-        startTime = new Date(now.getTime() - 5 * 60 * 1000);
-        break;
-      case '1h':
-        startTime = new Date(now.getTime() - 60 * 60 * 1000);
-        break;
-      default:
-        startTime = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    .dashboard {
+      max-width: 1440px;
+      width: 100%;
+      margin: 0 auto;
     }
 
-    const valid = [
-      'bmp_temp',
-      'dht_temp',
-      'humidity',
-      'aqi',
-      'uv',
-      'light_level',
-      'pressure',
-      'rain_percentage'
-    ];
-
-    if (!valid.includes(type)) {
-      console.error(`❌ Invalid history type: ${type}`);
-      return [];
+    /* --- header --- */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 32px;
     }
 
-    const { data, error } = await supabase
-      .from('sensor_readings')
-      .select(`created_at, ${type}`)
-      .gt('created_at', startTime.toISOString())
-      .order('created_at', { ascending: true });
-
-    if (error) {
-      console.error('❌ History Fetch Error:', error.message);
-      return [];
+    .header-left h1 {
+      font-size: 1.8rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: #0f172a;
+      margin: 0;
     }
 
-    // normalize for charts
-    return (data || []).map(row => ({
-      created_at: row.created_at,
-      value: Number(row[type]) || 0
-    }));
-
-  } catch (err) {
-    console.error('❌ History crash:', err);
-    return [];
-  }
-}
-
-// ===============================
-// TELEGRAM SUBSCRIBERS
-// ===============================
-
-async function addSubscriber(userInfo) {
-  try {
-    const { error } = await supabase
-      .from('telegram_subscribers')
-      .upsert({
-        chat_id: userInfo.chat_id,
-        first_name: userInfo.first_name,
-        username: userInfo.username,
-        is_subscribed: true
-      }, { onConflict: 'chat_id' });
-
-    if (error) {
-      console.error('❌ Sub Add Error:', error.message);
-    } else {
-      console.log('✅ Subscriber updated:', userInfo.chat_id);
-    }
-  } catch (err) {
-    console.error('❌ Subscriber crash:', err);
-  }
-}
-
-async function updateSubscription(chat_id, status) {
-  try {
-    const { error } = await supabase
-      .from('telegram_subscribers')
-      .update({ is_subscribed: status })
-      .eq('chat_id', chat_id);
-
-    if (error) {
-      console.error('❌ Sub Update Error:', error.message);
-    }
-  } catch (err) {
-    console.error('❌ Sub update crash:', err);
-  }
-}
-
-async function getSubscribers() {
-  try {
-    const { data, error } = await supabase
-      .from('telegram_subscribers')
-      .select('chat_id')
-      .eq('is_subscribed', true);
-
-    if (error) {
-      console.error('❌ Sub Fetch Error:', error.message);
-      return [];
+    .header-right {
+      display: flex;
+      gap: 12px;
+      align-items: center;
     }
 
-    return data || [];
-  } catch (err) {
-    console.error('❌ Sub fetch crash:', err);
-    return [];
-  }
-}
-
-// ===============================
-// ALERT THRESHOLDS
-// ===============================
-
-async function getThresholds() {
-  try {
-    const { data, error } = await supabase
-      .from('alert_thresholds')
-      .select('metric, threshold_value, alert_if_above');
-
-    if (error) {
-      console.error('❌ Threshold Fetch Error:', error.message);
-      return null;
+    .icon-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: white;
+      border: none;
+      box-shadow: 0 4px 10px -2px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.02);
+      color: #475569;
+      font-size: 1.2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      position: relative;
     }
 
-    const map = {};
+    .icon-btn:hover {
+      background: #f9fafc;
+      color: #14b8a6;
+      box-shadow: 0 8px 18px -6px rgba(20, 184, 166, 0.2);
+      transform: translateY(-2px);
+    }
 
-    (data || []).forEach(i => {
-      map[i.metric] = {
-        value: parseFloat(i.threshold_value),
-        alert_if_above: i.alert_if_above
-      };
-    });
+    .badge {
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      background: #ef4444;
+      color: white;
+      font-size: 0.7rem;
+      font-weight: 600;
+      min-width: 18px;
+      height: 18px;
+      border-radius: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 4px;
+      border: 2px solid white;
+    }
 
-    return map;
-  } catch (err) {
-    console.error('❌ Threshold crash:', err);
-    return null;
-  }
-}
+    /* --- card base --- */
+    .card {
+      background: white;
+      border-radius: 24px;
+      box-shadow: 0 12px 30px -8px rgba(0, 0, 0, 0.06), 0 4px 8px -2px rgba(0, 0, 0, 0.02);
+      padding: 24px 20px;
+      transition: box-shadow 0.2s;
+    }
 
-async function updateThresholds(thresholds) {
-  try {
-    const updates = [];
+    .card:hover {
+      box-shadow: 0 20px 35px -10px rgba(0, 0, 0, 0.1);
+    }
 
-    for (const m in thresholds) {
-      const val = Number(thresholds[m]);
+    /* --- metrics grid (2x3) --- */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 22px;
+      margin-bottom: 24px;
+    }
 
-      if (!isNaN(val)) {
-        updates.push({
-          metric: m,
-          threshold_value: val,
-          updated_at: new Date().toISOString()
-        });
+    .metric-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+    }
+
+    .metric-label {
+      font-size: 0.95rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      color: #64748b;
+      margin-bottom: 12px;
+    }
+
+    /* gauge container */
+    .gauge-wrapper {
+      position: relative;
+      width: 130px;
+      height: 130px;
+      margin: 0 auto 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .gauge-svg {
+      width: 130px;
+      height: 130px;
+      display: block;
+    }
+
+    .gauge-value {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-weight: 700;
+      font-size: 1.8rem;
+      color: #1e293b;
+      line-height: 1.2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .gauge-unit {
+      font-size: 0.7rem;
+      font-weight: 500;
+      color: #94a3b8;
+      margin-top: 2px;
+    }
+
+    /* big number cards (temp, humidity, pressure) */
+    .big-number {
+      font-size: 3.2rem;
+      font-weight: 600;
+      color: #0f172a;
+      line-height: 1;
+      margin: 12px 0 4px;
+    }
+
+    .metric-unit {
+      font-size: 1rem;
+      font-weight: 400;
+      color: #64748b;
+    }
+
+    /* --- conditions card (full width) --- */
+    .conditions-card {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 30px;
+      padding: 22px 32px;
+    }
+
+    .condition-item {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .condition-icon {
+      width: 48px;
+      height: 48px;
+      background: #eef2f6;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #14b8a6;
+      font-size: 1.4rem;
+    }
+
+    .condition-info h4 {
+      font-size: 1rem;
+      font-weight: 500;
+      color: #64748b;
+      margin-bottom: 4px;
+    }
+
+    .condition-value {
+      font-size: 1.6rem;
+      font-weight: 600;
+      color: #0f172a;
+    }
+
+    .condition-unit {
+      font-size: 0.9rem;
+      font-weight: 400;
+      color: #94a3b8;
+      margin-left: 4px;
+    }
+
+    /* --- trend analysis card --- */
+    .trend-card {
+      padding: 24px 24px 20px;
+    }
+
+    .trend-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      gap: 16px;
+    }
+
+    .trend-title {
+      font-size: 1.3rem;
+      font-weight: 600;
+      color: #0f172a;
+    }
+
+    .metric-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .pill {
+      background: #f1f5f9;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 40px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: #475569;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+
+    .pill.active {
+      background: #14b8a6;
+      color: white;
+      box-shadow: 0 6px 12px -6px rgba(20, 184, 166, 0.5);
+    }
+
+    .time-pills {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    .chart-container {
+      width: 100%;
+      height: 320px;
+      overflow: hidden;
+    }
+
+    /* --- modal base (reused) --- */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.3);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.2s ease, visibility 0.2s;
+    }
+
+    .modal-overlay.active {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .modal {
+      background: white;
+      border-radius: 28px;
+      box-shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.25), 0 10px 25px -10px rgba(0, 0, 0, 0.1);
+      width: 90%;
+      max-width: 500px;
+      max-height: 90vh;
+      overflow-y: auto;
+      padding: 32px 28px;
+      transform: scale(0.95);
+      transition: transform 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.1);
+    }
+
+    .modal-overlay.active .modal {
+      transform: scale(1);
+    }
+
+    .modal h2 {
+      font-size: 1.7rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #0f172a;
+      margin-bottom: 8px;
+    }
+
+    .modal-sub {
+      font-size: 0.95rem;
+      color: #64748b;
+      margin-bottom: 28px;
+      line-height: 1.5;
+    }
+
+    .form-group {
+      margin-bottom: 22px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: #334155;
+      margin-bottom: 6px;
+    }
+
+    .form-group input,
+    .form-group select {
+      width: 100%;
+      padding: 14px 18px;
+      font-size: 1rem;
+      border: 1.5px solid #e2e8f0;
+      border-radius: 18px;
+      background: white;
+      transition: border 0.15s, box-shadow 0.15s;
+      font-family: 'Inter', sans-serif;
+    }
+
+    .form-group input:focus,
+    .form-group select:focus {
+      outline: none;
+      border-color: #14b8a6;
+      box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.15);
+    }
+
+    /* dynamic time inputs */
+    .time-input-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .time-input-row input {
+      flex: 1;
+      padding: 12px 16px;
+    }
+    .remove-time-btn {
+      background: none;
+      border: none;
+      color: #ef4444;
+      font-size: 1.2rem;
+      cursor: pointer;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.1s;
+    }
+    .remove-time-btn:hover {
+      background: #fee2e2;
+    }
+    .add-time-btn {
+      background: #f1f5f9;
+      border: 1.5px dashed #cbd5e1;
+      color: #334155;
+      padding: 12px;
+      border-radius: 40px;
+      width: 100%;
+      font-weight: 500;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: background 0.2s;
+    }
+    .add-time-btn:hover {
+      background: #e2e8f0;
+    }
+
+    .action-row {
+      display: flex;
+      justify-content: space-between;
+      margin: 28px 0 24px;
+    }
+
+    .text-btn {
+      background: none;
+      border: none;
+      font-size: 0.95rem;
+      font-weight: 500;
+      cursor: pointer;
+      padding: 8px 4px;
+      border-radius: 30px;
+      transition: background 0.1s;
+    }
+
+    .text-btn.teal {
+      color: #14b8a6;
+    }
+    .text-btn.teal:hover {
+      background: #ecfdf5;
+    }
+    .text-btn.red {
+      color: #ef4444;
+    }
+    .text-btn.red:hover {
+      background: #fef2f2;
+    }
+
+    .time-chips {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin: 16px 0 28px;
+    }
+    .chip {
+      background: #f1f5f9;
+      padding: 8px 18px;
+      border-radius: 40px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: #1e293b;
+    }
+
+    .save-btn {
+      background: #14b8a6;
+      color: white;
+      border: none;
+      width: 100%;
+      padding: 16px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      border-radius: 40px;
+      cursor: pointer;
+      transition: background 0.2s, box-shadow 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .save-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      background: #94a3b8;
+    }
+
+    .save-btn:not(:disabled):hover {
+      background: #0d9488;
+      box-shadow: 0 12px 20px -12px #14b8a6;
+    }
+
+    .spinner {
+      width: 20px;
+      height: 20px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* toast */
+    .toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 1100;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .toast {
+      background: white;
+      color: #1e293b;
+      padding: 16px 22px;
+      border-radius: 60px;
+      box-shadow: 0 15px 30px -12px rgba(0,0,0,0.2);
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      animation: slideIn 0.2s ease;
+      border-left: 6px solid;
+    }
+    .toast.success { border-left-color: #10b981; }
+    .toast.error { border-left-color: #ef4444; }
+    .toast i { font-size: 1.2rem; }
+    .toast.success i { color: #10b981; }
+    .toast.error i { color: #ef4444; }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(30px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    /* responsive */
+    @media (max-width: 900px) {
+      .metrics-grid { gap: 16px; }
+      .big-number { font-size: 2.5rem; }
+      .chart-container { height: 280px; }
+    }
+
+    @media (max-width: 700px) {
+      body { padding: 16px; }
+      .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+      .conditions-card { flex-direction: column; align-items: flex-start; gap: 20px; }
+      .trend-header { flex-direction: column; align-items: flex-start; }
+      .modal { padding: 24px 20px; }
+      .chart-container { height: 240px; }
+    }
+
+    @media (max-width: 480px) {
+      .metrics-grid { grid-template-columns: 1fr; }
+      .header { flex-direction: column; align-items: flex-start; gap: 16px; }
+      .header-right { align-self: flex-end; }
+      .chart-container { height: 200px; }
+    }
+  </style>
+</head>
+<body>
+<div class="dashboard">
+  <!-- header -->
+  <header class="header">
+    <div class="header-left">
+      <h1>CampusSense</h1>
+    </div>
+    <div class="header-right">
+      <button class="icon-btn" id="settingsBtn" aria-label="settings"><i class="fas fa-cog"></i></button>
+      <button class="icon-btn" id="notificationsBtn" aria-label="notifications">
+        <i class="fas fa-bell"></i>
+        <span id="notificationBadge" class="badge" style="display: none;">0</span>
+      </button>
+      <button class="icon-btn" aria-label="share"><i class="fas fa-paper-plane"></i></button>
+    </div>
+  </header>
+
+  <!-- main metric grid (2 rows x 3 cols) -->
+  <div class="metrics-grid">
+    <!-- 1) AQI circular gauge -->
+    <div class="card metric-card">
+      <div class="metric-label">AQI (CO₂ PPM)</div>
+      <div class="gauge-wrapper">
+        <svg class="gauge-svg" viewBox="0 0 120 120">
+          <circle cx="60" cy="60" r="50" fill="none" stroke="#e9edf2" stroke-width="8" />
+          <circle id="aqi-circle" cx="60" cy="60" r="50" fill="none" stroke="#14b8a6" stroke-width="8" stroke-linecap="round" stroke-dasharray="314.16" stroke-dashoffset="314.16" transform="rotate(-90 60 60)" />
+        </svg>
+        <div class="gauge-value">
+          <span id="aqi-value">--</span>
+          <span class="gauge-unit">ppm</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2) UV Index circular gauge -->
+    <div class="card metric-card">
+      <div class="metric-label">UV INDEX</div>
+      <div class="gauge-wrapper">
+        <svg class="gauge-svg" viewBox="0 0 120 120">
+          <circle cx="60" cy="60" r="50" fill="none" stroke="#e9edf2" stroke-width="8" />
+          <circle id="uv-circle" cx="60" cy="60" r="50" fill="none" stroke="#14b8a6" stroke-width="8" stroke-linecap="round" stroke-dasharray="314.16" stroke-dashoffset="314.16" transform="rotate(-90 60 60)" />
+        </svg>
+        <div class="gauge-value">
+          <span id="uv-value">--</span>
+          <span class="gauge-unit">UV</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3) Temp (BMP) big number -->
+    <div class="card metric-card">
+      <div class="metric-label">TEMP (BMP)</div>
+      <div class="big-number" id="bmp-temp">--</div>
+      <div class="metric-unit">°C</div>
+    </div>
+
+    <!-- 4) Temp (DHT) big number -->
+    <div class="card metric-card">
+      <div class="metric-label">TEMP (DHT)</div>
+      <div class="big-number" id="dht-temp">--</div>
+      <div class="metric-unit">°C</div>
+    </div>
+
+    <!-- 5) Humidity big number -->
+    <div class="card metric-card">
+      <div class="metric-label">HUMIDITY</div>
+      <div class="big-number" id="humidity">--</div>
+      <div class="metric-unit">%</div>
+    </div>
+
+    <!-- 6) Pressure big number -->
+    <div class="card metric-card">
+      <div class="metric-label">PRESSURE</div>
+      <div class="big-number" id="pressure">--</div>
+      <div class="metric-unit">hPa</div>
+    </div>
+  </div>
+
+  <!-- current conditions card (full width) -->
+  <div class="card conditions-card">
+    <div class="condition-item">
+      <div class="condition-icon"><i class="fas fa-cloud-rain"></i></div>
+      <div class="condition-info">
+        <h4>Rain status</h4>
+        <div><span class="condition-value" id="rain-status">--</span> <span class="condition-unit"></span></div>
+      </div>
+    </div>
+    <div class="condition-item">
+      <div class="condition-icon"><i class="fas fa-tint"></i></div>
+      <div class="condition-info">
+        <h4>Rain %</h4>
+        <div><span class="condition-value" id="rain-pct">--</span><span class="condition-unit">%</span></div>
+      </div>
+    </div>
+    <div class="condition-item">
+      <div class="condition-icon"><i class="fas fa-sun"></i></div>
+      <div class="condition-info">
+        <h4>Brightness</h4>
+        <div><span class="condition-value" id="brightness-status">--</span> <span class="condition-unit"></span></div>
+      </div>
+    </div>
+    <div class="condition-item">
+      <div class="condition-icon"><i class="fas fa-percent"></i></div>
+      <div class="condition-info">
+        <h4>Brightness %</h4>
+        <div><span class="condition-value" id="brightness-pct">--</span><span class="condition-unit">%</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- trend analysis card -->
+  <div class="card trend-card">
+    <div class="trend-header">
+      <span class="trend-title">Trend Analysis</span>
+      <div class="metric-pills" id="metric-pills-container">
+        <button class="pill active" data-metric="bmp_temp">BMP Temp</button>
+        <button class="pill" data-metric="dht_temp">DHT Temp</button>
+        <button class="pill" data-metric="aqi">AQI</button>
+        <button class="pill" data-metric="humidity">Humidity</button>
+        <button class="pill" data-metric="uv">UV</button>
+        <button class="pill" data-metric="pressure">Pressure</button>
+        <button class="pill" data-metric="light_level">Light</button>
+        <button class="pill" data-metric="rain_percentage">Rain</button>
+      </div>
+    </div>
+    <div class="time-pills" id="range-pills-container">
+      <button class="pill" data-range="5m">5 min</button>
+      <button class="pill" data-range="1h">1 hr</button>
+      <button class="pill active" data-range="24h">24 hr</button>
+    </div>
+    <!-- chart container -->
+    <div id="trend-chart" class="chart-container"></div>
+  </div>
+</div>
+
+<!-- Settings Modal (Thresholds) -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal">
+    <h2>⚙️ Control Thresholds</h2>
+    <div class="modal-sub">Set values to trigger alerts. Use suggestions or enter manually.</div>
+
+    <div class="form-group">
+      <label for="th_aqi">AQI (CO₂) Threshold (PPM) – Alert if Above</label>
+      <input type="number" id="th_aqi" step="1" min="0" value="450">
+    </div>
+    <div class="form-group">
+      <label for="th_uv">UV Index Threshold – Alert if Above</label>
+      <input type="number" id="th_uv" step="0.1" min="0" max="15" value="7.0">
+    </div>
+    <div class="form-group">
+      <label for="th_bmp_temp">High Temp Threshold (°C) – Alert if Above</label>
+      <input type="number" id="th_bmp_temp" step="0.1" min="-20" max="60" value="28.0">
+    </div>
+    <div class="form-group">
+      <label for="th_pressure">Low Pressure Threshold (hPa) – Alert if Below</label>
+      <input type="number" id="th_pressure" step="1" min="900" max="1100" value="990">
+    </div>
+    <div class="form-group">
+      <label for="th_rain">Heavy Rain Threshold (%) – Alert if Above</label>
+      <input type="number" id="th_rain" step="1" min="0" max="100" value="70">
+    </div>
+
+    <div class="action-row">
+      <button class="text-btn teal" id="suggestBtn">✨ Suggest Thresholds (24h History)</button>
+      <button class="text-btn red" id="resetBtn">↺ Reset to Recommended Defaults</button>
+    </div>
+
+    <div style="margin-top: 8px;">
+      <div style="font-size: 0.95rem; font-weight: 500; color: #334155;">Automatic Daily Report Times (IST):</div>
+      <div class="time-chips">
+        <span class="chip">9:00 AM</span>
+        <span class="chip">12:00 PM</span>
+        <span class="chip">6:00 PM</span>
+      </div>
+    </div>
+
+    <button class="save-btn" id="saveThresholdsBtn">
+      <span>Save Thresholds</span>
+    </button>
+  </div>
+</div>
+
+<!-- Notification Settings Modal (Bell) with dynamic times -->
+<div class="modal-overlay" id="notificationModal">
+  <div class="modal">
+    <h2>🔔 Notification Preferences</h2>
+    <div class="modal-sub">Configure daily report times (add multiple) and alert frequency.</div>
+
+    <div style="margin-bottom: 20px;">
+      <label style="font-size: 0.95rem; font-weight: 500; color: #334155;">Daily Report Times (IST)</label>
+      <div id="timeInputsContainer"></div>
+      <button class="add-time-btn" id="addTimeBtn">+ Add another time</button>
+    </div>
+
+    <div class="form-group">
+      <label for="notifRate">Alert Frequency</label>
+      <select id="notifRate">
+        <option value="immediate">Immediately</option>
+        <option value="15min">Every 15 minutes</option>
+        <option value="30min">Every 30 minutes</option>
+        <option value="hourly">Every hour</option>
+      </select>
+    </div>
+
+    <button class="save-btn" id="saveNotificationBtn">
+      <span>Save Preferences</span>
+    </button>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+  (function() {
+    // ----- DOM references -----
+    const aqiValueSpan = document.getElementById('aqi-value');
+    const uvValueSpan = document.getElementById('uv-value');
+    const aqiCircle = document.getElementById('aqi-circle');
+    const uvCircle = document.getElementById('uv-circle');
+    const bmpTempSpan = document.getElementById('bmp-temp');
+    const dhtTempSpan = document.getElementById('dht-temp');
+    const humiditySpan = document.getElementById('humidity');
+    const pressureSpan = document.getElementById('pressure');
+    const rainStatusSpan = document.getElementById('rain-status');
+    const rainPctSpan = document.getElementById('rain-pct');
+    const brightnessStatusSpan = document.getElementById('brightness-status');
+    const brightnessPctSpan = document.getElementById('brightness-pct');
+
+    // chart
+    let chart;
+    const chartEl = document.querySelector("#trend-chart");
+    const metricPills = document.querySelectorAll('[data-metric]');
+    const rangePills = document.querySelectorAll('[data-range]');
+    let currentMetric = 'bmp_temp';
+    let currentRange = '24h';
+
+    const toastContainer = document.getElementById('toastContainer');
+
+    // ----- helper: show toast (used by modals) -----
+    function showToast(message, type = 'success') {
+      const toast = document.createElement('div');
+      toast.className = `toast ${type}`;
+      toast.innerHTML = `<i class="fas ${type === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle'}"></i> ${message}`;
+      toastContainer.appendChild(toast);
+      setTimeout(() => toast.remove(), 4000);
+    }
+
+    // ----- gauge helper -----
+    const C = 2 * Math.PI * 50; // 314.159
+    function setGauge(circle, percent) {
+      if (!circle) return;
+      const offset = C * (1 - Math.min(100, Math.max(0, percent)) / 100);
+      circle.setAttribute('stroke-dashoffset', offset);
+    }
+
+    // ----- real API calls -----
+    async function fetchLatestData() {
+      try {
+        const response = await fetch('/api/data');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        return data;
+      } catch (err) {
+        console.warn('Failed to fetch latest data:', err);
+        return null;
       }
     }
 
-    if (updates.length === 0) return true;
-
-    const { error } = await supabase
-      .from('alert_thresholds')
-      .upsert(updates, { onConflict: 'metric' });
-
-    if (error) {
-      console.error('❌ Threshold Update Error:', error.message);
-      return false;
+    async function fetchGraphData(metric, range) {
+      try {
+        const url = `/api/graph-data?type=${encodeURIComponent(metric)}&range=${encodeURIComponent(range)}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const json = await response.json();
+        return json;
+      } catch (err) {
+        console.warn('Failed to fetch graph data:', err);
+        return [];
+      }
     }
 
-    console.log(`✅ Updated ${updates.length} thresholds`);
-    return true;
+    // ----- update dashboard from real data -----
+    function updateDashboard(data) {
+      if (!data) return;
 
-  } catch (err) {
-    console.error('❌ Threshold update crash:', err);
-    return false;
-  }
-}
+      const aqiPercent = Math.min(100, (data.aqi / 1000) * 100);
+      setGauge(aqiCircle, aqiPercent);
+      aqiValueSpan.textContent = data.aqi?.toFixed?.(0) ?? '--';
 
-// ===============================
-// DAILY REPORT SCHEDULE
-// ===============================
+      const uvPercent = Math.min(100, (data.uv / 11) * 100);
+      setGauge(uvCircle, uvPercent);
+      uvValueSpan.textContent = data.uv?.toFixed?.(1) ?? '--';
 
-async function getAllReportScheduleTimes() {
-  try {
-    const { data, error } = await supabase
-      .from('scheduled_reports')
-      .select('report_time')
-      .eq('is_active', true)
-      .order('report_time', { ascending: true });
+      bmpTempSpan.textContent = data.bmp_temp?.toFixed?.(1) ?? '--';
+      dhtTempSpan.textContent = data.dht_temp?.toFixed?.(1) ?? '--';
+      humiditySpan.textContent = data.humidity?.toFixed?.(0) ?? '--';
+      pressureSpan.textContent = data.pressure?.toFixed?.(0) ?? '--';
 
-    if (error) {
-      console.error('❌ Schedule Fetch Error:', error.message);
-      return ['08:00'];
+      const rainPct = data.rain_percentage;
+      if (rainPct != null) {
+        rainPctSpan.textContent = Math.round(rainPct);
+        if (rainPct === 0) rainStatusSpan.textContent = 'Dry';
+        else if (rainPct <= 25) rainStatusSpan.textContent = 'Light Moisture';
+        else if (rainPct <= 70) rainStatusSpan.textContent = 'Moderate Rain';
+        else rainStatusSpan.textContent = 'Heavy Rain';
+      } else {
+        rainPctSpan.textContent = '--';
+        rainStatusSpan.textContent = '--';
+      }
+
+      const light = data.light_level;
+      if (light != null) {
+        brightnessPctSpan.textContent = Math.round(light);
+        if (light < 30) brightnessStatusSpan.textContent = 'Dim';
+        else if (light <= 70) brightnessStatusSpan.textContent = 'Normal';
+        else brightnessStatusSpan.textContent = 'Bright';
+      } else {
+        brightnessPctSpan.textContent = '--';
+        brightnessStatusSpan.textContent = '--';
+      }
     }
 
-    return data?.map(i => i.report_time) || ['08:00'];
-  } catch (err) {
-    console.error('❌ Schedule crash:', err);
-    return ['08:00'];
-  }
-}
+    // ----- refresh graph with real data -----
+    async function refreshGraph() {
+      try {
+        const graphArray = await fetchGraphData(currentMetric, currentRange);
+        let categories = [];
+        let seriesData = [];
 
-async function updateAllReportScheduleTimes(newTimes) {
-  try {
-    // safer delete
-    const { error: delErr } = await supabase
-      .from('scheduled_reports')
-      .delete()
-      .not('id', 'is', null);
+        if (graphArray && Array.isArray(graphArray) && graphArray.length > 0) {
+          categories = graphArray.map(item => {
+            const d = new Date(item.created_at);
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          });
+          seriesData = graphArray.map(item => item.value);
+        }
 
-    if (delErr) {
-      console.error('❌ Schedule Delete Error:', delErr.message);
-      return false;
+        const series = [{ name: currentMetric.replace('_', ' ').toUpperCase(), data: seriesData }];
+
+        if (chart) {
+          chart.updateOptions({ xaxis: { categories } });
+          chart.updateSeries(series);
+        } else {
+          const options = {
+            chart: {
+              type: 'area',
+              height: '100%',
+              parentHeightOffset: 0,
+              toolbar: { show: false },
+              zoom: { enabled: false }
+            },
+            series: series,
+            xaxis: {
+              categories: categories,
+              labels: { style: { colors: '#64748b' } }
+            },
+            yaxis: {
+              labels: { style: { colors: '#64748b' } },
+              forceNiceScale: true,
+              tickAmount: 5
+            },
+            stroke: { curve: 'smooth', width: 3, colors: ['#14b8a6'] },
+            fill: {
+              type: 'gradient',
+              gradient: { shadeIntensity: 1, opacityFrom: 0.3, opacityTo: 0.1, stops: [0, 90, 100] }
+            },
+            grid: {
+              borderColor: '#e2e8f0',
+              strokeDashArray: 4,
+              padding: { top: 25, right: 25, bottom: 25, left: 25 }
+            },
+            tooltip: { theme: 'light' },
+            colors: ['#14b8a6'],
+            dataLabels: { enabled: false }
+          };
+          chart = new ApexCharts(chartEl, options);
+          await chart.render();
+        }
+      } catch (e) {
+        console.warn('graph refresh failed', e);
+      }
     }
 
-    const newSchedules = newTimes.map(t => ({
-      report_time: t,
-      is_active: true
-    }));
-
-    const { error: insErr } = await supabase
-      .from('scheduled_reports')
-      .insert(newSchedules);
-
-    if (insErr) {
-      console.error('❌ Schedule Insert Error:', insErr.message);
-      return false;
+    // ----- periodic data refresh -----
+    async function refreshAllData() {
+      const data = await fetchLatestData();
+      if (data) updateDashboard(data);
     }
 
-    console.log(`✅ Updated schedules: ${newTimes.join(', ')}`);
-    return true;
+    // ----- pill activation helpers -----
+    function setActivePill(containerSelector, value) {
+      document.querySelectorAll(containerSelector + ' .pill').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll(containerSelector + ' .pill').forEach(p => {
+        if (p.dataset.metric === value || p.dataset.range === value) p.classList.add('active');
+      });
+    }
 
-  } catch (err) {
-    console.error('❌ Schedule update crash:', err);
-    return false;
-  }
-}
+    metricPills.forEach(pill => {
+      pill.addEventListener('click', () => {
+        const metric = pill.dataset.metric;
+        if (!metric) return;
+        currentMetric = metric;
+        setActivePill('#metric-pills-container', metric);
+        refreshGraph();
+      });
+    });
 
-// ===============================
-// EXPORTS
-// ===============================
+    rangePills.forEach(pill => {
+      pill.addEventListener('click', () => {
+        const range = pill.dataset.range;
+        if (!range) return;
+        currentRange = range;
+        setActivePill('#range-pills-container', range);
+        refreshGraph();
+      });
+    });
 
-module.exports = {
-  insertSensorData,
-  getLatestSensorData,
-  getHistoricalData,
-  addSubscriber,
-  updateSubscription,
-  getSubscribers,
-  getThresholds,
-  updateThresholds,
-  getAllReportScheduleTimes,
-  updateAllReportScheduleTimes
-};
+    // ----- settings modal logic (real API) -----
+    const settingsModal = document.getElementById('settingsModal');
+    const settingsBtn = document.getElementById('settingsBtn');
+    const thAqi = document.getElementById('th_aqi');
+    const thUv = document.getElementById('th_uv');
+    const thBmp = document.getElementById('th_bmp_temp');
+    const thPressure = document.getElementById('th_pressure');
+    const thRain = document.getElementById('th_rain');
+    const saveThresholdsBtn = document.getElementById('saveThresholdsBtn');
+    const suggestBtn = document.getElementById('suggestBtn');
+    const resetBtn = document.getElementById('resetBtn');
+
+    // Fetch thresholds from API when opening modal
+    async function openSettingsModal() {
+      settingsModal.classList.add('active');
+      saveThresholdsBtn.disabled = true;
+      saveThresholdsBtn.innerHTML = `<span>Loading...</span><div class="spinner"></div>`;
+
+      try {
+        const response = await fetch('/api/get-thresholds');
+        if (!response.ok) throw new Error('Failed to fetch thresholds');
+        const data = await response.json();
+        thAqi.value = data.aqi ?? 450;
+        thUv.value = data.uv ?? 7.0;
+        thBmp.value = data.bmp_temp ?? 28.0;
+        thPressure.value = data.pressure ?? 990;
+        thRain.value = data.rain_percentage ?? 70;
+      } catch (err) {
+        console.warn('Could not load thresholds, using defaults:', err);
+        // fallback to defaults
+        thAqi.value = 450;
+        thUv.value = 7.0;
+        thBmp.value = 28.0;
+        thPressure.value = 990;
+        thRain.value = 70;
+      } finally {
+        saveThresholdsBtn.disabled = false;
+        saveThresholdsBtn.innerHTML = `<span>Save Thresholds</span>`;
+      }
+    }
+
+    function closeSettingsModal() {
+      settingsModal.classList.remove('active');
+    }
+
+    settingsBtn.addEventListener('click', openSettingsModal);
+    settingsModal.addEventListener('click', (e) => {
+      if (e.target === settingsModal) closeSettingsModal();
+    });
+
+    suggestBtn.addEventListener('click', () => {
+      // mock suggestion based on 24h history; keep as is
+      thAqi.value = 380 + Math.floor(Math.random() * 100);
+      thUv.value = (5 + Math.random() * 3).toFixed(1);
+      thBmp.value = (26 + Math.random() * 4).toFixed(1);
+      thPressure.value = 990 + Math.floor(Math.random() * 15);
+      thRain.value = 50 + Math.floor(Math.random() * 30);
+    });
+
+    resetBtn.addEventListener('click', () => {
+      thAqi.value = 500;
+      thUv.value = 8.0;
+      thBmp.value = 30.0;
+      thPressure.value = 1000;
+      thRain.value = 80;
+    });
+
+    saveThresholdsBtn.addEventListener('click', async () => {
+      const payload = {
+        aqi: parseInt(thAqi.value, 10),
+        uv: parseFloat(thUv.value),
+        bmp_temp: parseFloat(thBmp.value),
+        pressure: parseInt(thPressure.value, 10),
+        rain_percentage: parseInt(thRain.value, 10)
+      };
+      if (isNaN(payload.aqi) || isNaN(payload.uv) || isNaN(payload.bmp_temp) || isNaN(payload.pressure) || isNaN(payload.rain_percentage)) {
+        showToast('All fields must be valid numbers', 'error');
+        return;
+      }
+
+      saveThresholdsBtn.disabled = true;
+      saveThresholdsBtn.innerHTML = `<span>Saving...</span><div class="spinner"></div>`;
+
+      try {
+        const response = await fetch('/api/set-thresholds', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error('Save failed');
+        showToast('Thresholds updated successfully', 'success');
+        closeSettingsModal();
+      } catch (err) {
+        console.error(err);
+        showToast('Failed to save thresholds', 'error');
+        saveThresholdsBtn.disabled = false;
+        saveThresholdsBtn.innerHTML = `<span>Save Thresholds</span>`;
+      }
+    });
+
+    // ----- notification modal with dynamic times + real API -----
+    const notificationModal = document.getElementById('notificationModal');
+    const notificationsBtn = document.getElementById('notificationsBtn');
+    const notificationBadge = document.getElementById('notificationBadge');
+    const timeInputsContainer = document.getElementById('timeInputsContainer');
+    const addTimeBtn = document.getElementById('addTimeBtn');
+    const notifRate = document.getElementById('notifRate');
+    const saveNotificationBtn = document.getElementById('saveNotificationBtn');
+
+    let notifPrefs = {
+      times: ['09:00', '12:00', '18:00'],
+      rate: 'immediate'
+    };
+
+    // Fetch notification preferences on page load
+    async function loadReportTimes() {
+      try {
+        const response = await fetch('/api/get-report-time');
+        if (!response.ok) throw new Error('Failed to fetch report times');
+        const data = await response.json();
+        // Assuming API returns { report_times: array, rate: string }
+        notifPrefs.times = data.report_times || ['09:00', '12:00', '18:00'];
+        notifPrefs.rate = data.rate || 'immediate';
+      } catch (err) {
+        console.warn('Could not load report times, using defaults:', err);
+      }
+    }
+
+    // Fetch unread notifications count
+    async function fetchNotificationCount() {
+      try {
+        const response = await fetch('/api/notifications');
+        if (!response.ok) throw new Error('Failed to fetch notifications');
+        const data = await response.json();
+        // Assuming API returns { unread: number } or an array with unread count
+        const count = data.unread || (Array.isArray(data) ? data.length : 0);
+        if (count > 0) {
+          notificationBadge.style.display = 'flex';
+          notificationBadge.textContent = count > 99 ? '99+' : count;
+        } else {
+          notificationBadge.style.display = 'none';
+        }
+      } catch (err) {
+        console.warn('Could not fetch notification count:', err);
+        notificationBadge.style.display = 'none';
+      }
+    }
+
+    // render time inputs from notifPrefs.times
+    function renderTimeInputs() {
+      timeInputsContainer.innerHTML = '';
+      notifPrefs.times.forEach((time, index) => {
+        const row = document.createElement('div');
+        row.className = 'time-input-row';
+        row.innerHTML = `
+          <input type="time" class="dynamic-time" value="${time}" step="3600">
+          <button class="remove-time-btn" data-index="${index}"><i class="fas fa-trash"></i></button>
+        `;
+        timeInputsContainer.appendChild(row);
+      });
+
+      document.querySelectorAll('.remove-time-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const idx = parseInt(btn.dataset.index, 10);
+          if (notifPrefs.times.length > 1) {
+            notifPrefs.times.splice(idx, 1);
+            renderTimeInputs();
+          } else {
+            showToast('At least one time is required', 'error');
+          }
+        });
+      });
+    }
+
+    function addTime() {
+      notifPrefs.times.push('09:00');
+      renderTimeInputs();
+    }
+
+    function syncTimesFromInputs() {
+      const inputs = document.querySelectorAll('.dynamic-time');
+      const newTimes = [];
+      inputs.forEach(input => {
+        if (input.value) newTimes.push(input.value);
+      });
+      if (newTimes.length === 0) newTimes.push('09:00');
+      notifPrefs.times = newTimes;
+    }
+
+    async function openNotificationModal() {
+      // Refresh prefs from server before opening
+      await loadReportTimes();
+      notificationModal.classList.add('active');
+      renderTimeInputs();
+      notifRate.value = notifPrefs.rate;
+    }
+
+    function closeNotificationModal() {
+      notificationModal.classList.remove('active');
+    }
+
+    notificationsBtn.addEventListener('click', async () => {
+      await openNotificationModal();
+      // Also fetch fresh notification count on open
+      fetchNotificationCount();
+    });
+
+    notificationModal.addEventListener('click', (e) => {
+      if (e.target === notificationModal) closeNotificationModal();
+    });
+
+    addTimeBtn.addEventListener('click', addTime);
+
+    saveNotificationBtn.addEventListener('click', async () => {
+      syncTimesFromInputs();
+      if (notifPrefs.times.length === 0) {
+        showToast('Please add at least one report time', 'error');
+        return;
+      }
+      const payload = {
+        report_times: notifPrefs.times,
+        rate: notifRate.value
+      };
+
+      saveNotificationBtn.disabled = true;
+      saveNotificationBtn.innerHTML = `<span>Saving...</span><div class="spinner"></div>`;
+
+      try {
+        const response = await fetch('/api/set-report-time', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error('Save failed');
+        notifPrefs.rate = payload.rate; // update local
+        showToast('Notification preferences saved', 'success');
+        closeNotificationModal();
+      } catch (err) {
+        console.error(err);
+        showToast('Failed to save preferences', 'error');
+        saveNotificationBtn.disabled = false;
+        saveNotificationBtn.innerHTML = `<span>Save Preferences</span>`;
+      }
+    });
+
+    // ----- initial load & intervals -----
+    window.addEventListener('load', async () => {
+      await refreshAllData();
+      await refreshGraph();
+      await loadReportTimes(); // preload times for next modal open
+      await fetchNotificationCount(); // initial badge
+      setInterval(refreshAllData, 7000);
+      setInterval(refreshGraph, 15000);
+      // Optionally refresh badge occasionally (e.g., every 60s)
+      setInterval(fetchNotificationCount, 60000);
+    });
+
+    // ESC key for both modals
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        if (settingsModal.classList.contains('active')) closeSettingsModal();
+        if (notificationModal.classList.contains('active')) closeNotificationModal();
+      }
+    });
+  })();
+</script>
+</body>
+</html>
