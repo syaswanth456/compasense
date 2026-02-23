@@ -929,7 +929,7 @@
           // Format x-axis labels based on range for better readability
           const formatOptions = currentRange === '5m' ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } :
                                currentRange === '1h' ? { hour: '2-digit', minute: '2-digit' } :
-                               { hour: '2-digit', minute: '2-digit' }; // for 24h maybe show day? but we keep hour/minute
+                               { hour: '2-digit', minute: '2-digit' };
           categories = graphArray.map(item => {
             const d = new Date(item.created_at);
             return d.toLocaleTimeString([], formatOptions);
@@ -941,6 +941,14 @@
         }
 
         const series = [{ name: currentMetric.replace('_', ' ').toUpperCase(), data: seriesData }];
+
+        // Y-axis padding function to ensure line never touches edges
+        const yaxisPadding = (value, isMin) => {
+          if (value === undefined || value === null) return undefined;
+          // Add 10% padding, but at least 1 unit of padding
+          const padding = Math.max(1, Math.abs(value) * 0.1);
+          return isMin ? value - padding : value + padding;
+        };
 
         // Common options
         const baseOptions = {
@@ -969,15 +977,16 @@
             },
             axisBorder: { show: false },
             axisTicks: { show: false },
-            tickAmount: currentRange === '24h' ? 6 : (currentRange === '1h' ? 6 : 6), // control label density
+            tickAmount: currentRange === '24h' ? 6 : (currentRange === '1h' ? 6 : 6),
           },
           yaxis: {
             labels: { style: { colors: '#64748b', fontSize: '12px' } },
             forceNiceScale: true,
             tickAmount: 5,
             decimalsInFloat: 1,
-            min: (min) => min - (min * 0.1), // add 10% padding below
-            max: (max) => max + (max * 0.1), // add 10% padding above
+            // Add padding to prevent line touching edges
+            min: (min) => seriesData.length ? yaxisPadding(min, true) : undefined,
+            max: (max) => seriesData.length ? yaxisPadding(max, false) : undefined,
           },
           stroke: { curve: 'smooth', width: 3, colors: ['#14b8a6'], lineCap: 'round' },
           fill: {
@@ -1177,6 +1186,7 @@
         const response = await fetch('/api/notifications');
         if (!response.ok) throw new Error('Failed to fetch notifications');
         const data = await response.json();
+        // API can return { unread: number } or an array
         const count = data.unread || (Array.isArray(data) ? data.length : 0);
         if (count > 0) {
           notificationBadge.style.display = 'flex';
