@@ -1,4 +1,7 @@
-// server.js
+// ===============================
+// 🚀 ENV & IMPORTS
+// ===============================
+
 require('dotenv').config();
 
 const express = require('express');
@@ -6,6 +9,7 @@ const path = require('path');
 const cron = require('node-cron');
 
 const { startMqttClient } = require('./services/mqttClient');
+
 const {
   getSubscribers,
   getLatestSensorData,
@@ -15,7 +19,10 @@ const {
   getThresholds,
   updateThresholds,
   getAllReportScheduleTimes,
-  updateAllReportScheduleTimes
+  updateAllReportScheduleTimes,
+  getWebNotifications,
+  markNotificationRead,
+  insertWebNotification
 } = require('./services/supabaseClient');
 
 const {
@@ -28,11 +35,20 @@ const {
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// ===============================
+// 🔧 MIDDLEWARE
+// ===============================
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// homepage fallback (important for Render)
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 // ===============================
-// GLOBAL STATE
+// 🔁 DYNAMIC STATE
 // ===============================
 
 let ALERT_THRESHOLDS = {};
@@ -43,21 +59,21 @@ let dailyReportScheduleTimes = [];
 let dailyReportCronJobs = [];
 
 // ===============================
-// TELEGRAM WEBHOOK
+// 🤖 TELEGRAM WEBHOOK
 // ===============================
 
 app.post('/api/telegram-webhook', async (req, res) => {
   const update = req.body;
   const bot = getBotInstance();
 
-  if (update?.message?.text && bot) {
-    const msg = update.message;
-    const chatId = msg.chat.id;
-    const text = msg.text;
+  try {
+    if (update?.message?.text && bot) {
+      const msg = update.message;
+      const chatId = msg.chat.id;
+      const text = msg.text;
 
-    console.log(`Received command: ${text} from ${chatId}`);
+      console.log(`📩 Telegram command: ${text} from ${chatId}`);
 
-    try {
       if (text === '/start') {
         const userInfo = {
           chat_id: chatId,
@@ -67,55 +83,56 @@ app.post('/api/telegram-webhook', async (req, res) => {
 
         await addSubscriber(userInfo);
 
-        const welcomeMessage =
-          `\nWelcome, *${userInfo.first_name}*! ✌️\n\n` +
-          `You are now subscribed.\n` +
-          `Commands:\n/status\n/stop`;
+        await bot.sendMessage(
+          chatId,
+          `Welcome, *${userInfo.first_name}*! ✌️\n\nYou are now subscribed.\n\nCommands:\n/status\n/stop`,
+          { parse_mode: 'Markdown' }
+        );
+      }
 
-        bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
-
-      } else if (text === '/stop') {
+      else if (text === '/stop') {
         await updateSubscription(chatId, false);
-        bot.sendMessage(chatId, "Unsubscribed. Type /start to subscribe again.");
+        await bot.sendMessage(chatId, 'Unsubscribed. Type /start to subscribe again.');
+      }
 
-      } else if (text === '/status') {
-        bot.sendMessage(chatId, "Fetching latest data...");
+      else if (text === '/status') {
+        await bot.sendMessage(chatId, 'Fetching latest data...');
         const latestData = await getLatestSensorData();
         const formattedMessage = formatLatestData(latestData);
 
-        bot.sendMessage(chatId, formattedMessage, {
+        await bot.sendMessage(chatId, formattedMessage, {
           parse_mode: 'Markdown'
         });
-
-      } else {
-        bot.sendMessage(chatId, "Unknown command. Use /start, /stop, or /status.");
       }
 
-    } catch (error) {
-      console.error(`Telegram command error from ${chatId}:`, error);
-      bot.sendMessage(chatId, "Error processing command.");
+      else {
+        await bot.sendMessage(chatId, 'Unknown command. Use /start, /stop, or /status.');
+      }
     }
+  } catch (error) {
+    console.error('Telegram webhook error:', error);
   }
 
   res.sendStatus(200);
 });
 
 // ===============================
-// DASHBOARD APIs
+// 📊 DASHBOARD APIs
 // ===============================
 
+// latest data
 app.get('/api/data', async (req, res) => {
   try {
     const d = await getLatestSensorData();
     if (!d) return res.status(204).send();
     res.json(d);
   } catch (e) {
-    console.error('API /data error:', e);
+    console.error('/api/data error:', e);
     res.status(500).json({ error: 'Fetch failed' });
   }
 });
 
-// ✅ FIXED GRAPH API
+// historical graph
 app.get('/api/graph-data', async (req, res) => {
   const { type, range } = req.query;
 
@@ -125,28 +142,53 @@ app.get('/api/graph-data', async (req, res) => {
 
   try {
     const d = await getHistoricalData(type, range);
-    if (!d || d.length === 0) return res.status(204).send();
+    if (!d?.length) return res.status(204).send();
     res.json(d);
   } catch (e) {
-    console.error('API /graph-data error:', e);
+    console.error('/api/graph-data error:', e);
     res.status(500).json({ error: 'Fetch failed' });
   }
 });
 
 // ===============================
-// THRESHOLDS
+// 🔔 WEB NOTIFICATIONS APIs
+// ===============================
+
+// get notifications
+app.get('/api/notifications', async (req, res) => {
+  try {
+    const data = await getWebNotifications();
+    res.json(data);
+  } catch (e) {
+    console.error('Notification fetch error:', e);
+    res.status(500).json({ error: 'Fetch failed' });
+  }
+});
+
+// mark read
+app.post('/api/notifications/read/:id', async (req, res) => {
+  try {
+    await markNotificationRead(req.params.id);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Notification update error:', e);
+    res.status(500).json({ error: 'Update failed' });
+  }
+});
+
+// ===============================
+// ⚠️ THRESHOLDS APIs
 // ===============================
 
 app.get('/api/get-thresholds', async (req, res) => {
   try {
-    const t =
-      Object.keys(ALERT_THRESHOLDS).length > 0
-        ? ALERT_THRESHOLDS
-        : await getThresholds();
+    const t = Object.keys(ALERT_THRESHOLDS).length
+      ? ALERT_THRESHOLDS
+      : await getThresholds();
 
     res.json(t || {});
   } catch (e) {
-    console.error('API /get-thresholds error:', e);
+    console.error('/api/get-thresholds error:', e);
     res.status(500).json({ error: 'Fetch failed' });
   }
 });
@@ -154,75 +196,78 @@ app.get('/api/get-thresholds', async (req, res) => {
 app.post('/api/set-thresholds', async (req, res) => {
   const nt = req.body;
 
-  if (!nt || Object.keys(nt).length === 0) {
+  if (!nt || !Object.keys(nt).length) {
     return res.status(400).json({ error: 'No thresholds' });
   }
 
   try {
     const success = await updateThresholds(nt);
-
     if (success) {
       await loadThresholdsFromDB();
-      return res.status(200).json({ message: 'Updated' });
+      return res.json({ message: 'Updated' });
     }
 
     res.status(500).json({ error: 'DB update failed' });
   } catch (e) {
-    console.error('API /set-thresholds error:', e);
+    console.error('/api/set-thresholds error:', e);
     res.status(500).json({ error: 'Update failed' });
   }
 });
 
 // ===============================
-// REPORT TIME
+// 📅 REPORT SCHEDULING
 // ===============================
 
-app.get('/api/get-report-time', async (req, res) => {
+app.get('/api/get-report-time', (req, res) => {
   res.json({ report_times: dailyReportScheduleTimes });
 });
 
 app.post('/api/set-report-time', async (req, res) => {
-  const { report_times: nt } = req.body;
+  const { report_times } = req.body;
 
-  if (!Array.isArray(nt) || nt.length === 0) {
+  if (!Array.isArray(report_times)) {
     return res.status(400).json({ error: 'Invalid times' });
   }
 
   try {
-    const success = await updateAllReportScheduleTimes(nt);
-
+    const success = await updateAllReportScheduleTimes(report_times);
     if (success) {
       await loadAndScheduleReports();
-      return res.status(200).json({ message: 'Updated' });
+      return res.json({ message: 'Updated' });
     }
 
     res.status(500).json({ error: 'DB update failed' });
   } catch (e) {
-    console.error('API /set-report-time error:', e);
+    console.error('/api/set-report-time error:', e);
     res.status(500).json({ error: 'Update failed' });
   }
 });
 
 // ===============================
-// ALERT ENGINE
+// 🚨 ALERT ENGINE
 // ===============================
 
 async function sendAlertToAll(messages) {
   const subs = await getSubscribers();
   const chatIds = subs.map(s => s.chat_id);
+
   await sendStructuredAlert(chatIds, 'ALERT', messages);
+
+  // 🔔 ALSO SAVE TO WEB NOTIFICATIONS
+  for (const msg of messages) {
+    await insertWebNotification('System Alert', msg, 'alert');
+  }
 }
 
 function checkThresholdAndState(metricName, stateKey, currentValue) {
   if (!ALERT_THRESHOLDS?.[metricName]) return null;
-  if (typeof currentValue !== 'number' || isNaN(currentValue)) return null;
-  if (!currentAlertState?.[stateKey]) return null;
+  if (typeof currentValue !== 'number') return null;
 
   const tInfo = ALERT_THRESHOLDS[metricName];
   const tVal = tInfo.value;
   const alertIfAbove = tInfo.alert_if_above;
-  const state = currentAlertState[stateKey];
 
+  const state = currentAlertState[stateKey];
   const isMet = alertIfAbove
     ? currentValue > tVal
     : currentValue < tVal;
@@ -241,34 +286,26 @@ function checkThresholdAndState(metricName, stateKey, currentValue) {
 
         switch (metricName) {
           case 'aqi':
-            alertMsg = `AQI WARNING: ${currentValue.toFixed(0)} PPM (${comp} ${tVal})`;
+            alertMsg = `AQI WARNING: ${currentValue} (${comp} ${tVal})`;
             break;
           case 'uv':
-            alertMsg = `HIGH UV: ${currentValue.toFixed(1)} (${comp} ${tVal})`;
+            alertMsg = `HIGH UV: ${currentValue} (${comp} ${tVal})`;
             break;
           case 'bmp_temp':
-            alertMsg = `HIGH TEMP: ${currentValue.toFixed(1)}°C (${comp} ${tVal})`;
+            alertMsg = `HIGH TEMP: ${currentValue}°C (${comp} ${tVal})`;
             break;
           case 'pressure':
-            alertMsg = `LOW PRESSURE: ${currentValue.toFixed(1)} hPa (${comp} ${tVal})`;
+            alertMsg = `LOW PRESSURE: ${currentValue} hPa (${comp} ${tVal})`;
             break;
           case 'rain_percentage':
-            alertMsg = `HEAVY RAIN: ${currentValue.toFixed(0)}% (${comp} ${tVal})`;
+            alertMsg = `HEAVY RAIN: ${currentValue}% (${comp} ${tVal})`;
             break;
         }
       }
     }
   } else {
-    if (state.alarming) {
-      state.consecutiveCount++;
-
-      if (state.consecutiveCount >= REQUIRED_CONSECUTIVE_READINGS) {
-        state.alarming = false;
-        state.consecutiveCount = 0;
-      }
-    } else {
-      state.consecutiveCount = 0;
-    }
+    state.consecutiveCount = 0;
+    state.alarming = false;
   }
 
   return alertMsg;
@@ -276,7 +313,7 @@ function checkThresholdAndState(metricName, stateKey, currentValue) {
 
 const alertingEngine = {
   checkForAlerts(data) {
-    if (Object.keys(ALERT_THRESHOLDS).length === 0) return;
+    if (!Object.keys(ALERT_THRESHOLDS).length) return;
 
     const msgs = [];
 
@@ -288,21 +325,35 @@ const alertingEngine = {
       ['rain_percentage', 'rain', data.rain_percentage]
     ];
 
-    checks.forEach(([metric, key, value]) => {
-      const msg = checkThresholdAndState(metric, key, value);
+    for (const [metric, key, val] of checks) {
+      const msg = checkThresholdAndState(metric, key, val);
       if (msg) msgs.push(msg);
-    });
+    }
 
-    if (msgs.length > 0) {
-      console.log('--- TRIGGERED ALERTS ---');
+    if (msgs.length) {
+      console.log('🚨 Alerts triggered');
       sendAlertToAll(msgs);
     }
   }
 };
 
 // ===============================
-// REPORT SCHEDULER
+// ⚙️ INITIALIZATION
 // ===============================
+
+async function loadThresholdsFromDB() {
+  const tFromDB = await getThresholds();
+
+  if (tFromDB) {
+    ALERT_THRESHOLDS = tFromDB;
+    currentAlertState = {};
+
+    Object.keys(ALERT_THRESHOLDS).forEach(m => {
+      const sk = m === 'rain_percentage' ? 'rain' : m;
+      currentAlertState[sk] = { alarming: false, consecutiveCount: 0 };
+    });
+  }
+}
 
 async function sendDailyReport() {
   try {
@@ -310,34 +361,31 @@ async function sendDailyReport() {
     const chatIds = subs.map(s => s.chat_id);
     const data = await getLatestSensorData();
 
-    if (data && chatIds.length > 0) {
+    if (data && chatIds.length) {
       const msgs = [formatLatestData(data)];
       await sendStructuredAlert(chatIds, 'REPORT', msgs);
     }
   } catch (e) {
-    console.error("Report error:", e);
+    console.error('Daily report error:', e);
   }
 }
 
-function scheduleDailyReports(times_hh_mm) {
+function scheduleDailyReports(times) {
   dailyReportCronJobs.forEach(j => j.stop());
   dailyReportCronJobs = [];
 
-  dailyReportScheduleTimes = times_hh_mm;
+  dailyReportScheduleTimes = times;
 
-  times_hh_mm.forEach(t => {
+  times.forEach(t => {
     const [h, m] = t.split(':');
     const cronEx = `${m} ${h} * * *`;
 
     const job = cron.schedule(cronEx, sendDailyReport, {
-      scheduled: true,
-      timezone: "Asia/Kolkata"
+      timezone: 'Asia/Kolkata'
     });
 
     dailyReportCronJobs.push(job);
   });
-
-  console.log(`Scheduled ${dailyReportCronJobs.length} report(s).`);
 }
 
 async function loadAndScheduleReports() {
@@ -346,42 +394,24 @@ async function loadAndScheduleReports() {
 }
 
 // ===============================
-// LOAD THRESHOLDS
-// ===============================
-
-async function loadThresholdsFromDB() {
-  const tFromDB = await getThresholds();
-
-  if (tFromDB && Object.keys(tFromDB).length > 0) {
-    ALERT_THRESHOLDS = tFromDB;
-    currentAlertState = {};
-
-    Object.keys(ALERT_THRESHOLDS).forEach(m => {
-      const sk = m === 'rain_percentage' ? 'rain' : m;
-      currentAlertState[sk] = { alarming: false, consecutiveCount: 0 };
-    });
-  } else {
-    ALERT_THRESHOLDS = {};
-    currentAlertState = {};
-  }
-}
-
-// ===============================
-// INIT
+// 🚀 START APP
 // ===============================
 
 async function initializeApp() {
   try {
+    console.log('🚀 Initializing backend...');
+
     await loadThresholdsFromDB();
     await loadAndScheduleReports();
     await startTelegramBot();
     startMqttClient(alertingEngine);
 
     app.listen(PORT, () => {
-      console.log(`Server listening on port ${PORT}`);
+      console.log(`✅ Server listening on port ${PORT}`);
     });
+
   } catch (e) {
-    console.error("CRITICAL INIT ERROR:", e);
+    console.error('💥 CRITICAL INIT ERROR:', e);
     process.exit(1);
   }
 }
