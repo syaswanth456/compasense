@@ -1,7 +1,3 @@
-// ===============================
-// 🚀 ENV & IMPORTS
-// ===============================
-
 require('dotenv').config();
 
 const express = require('express');
@@ -20,9 +16,9 @@ const {
   updateThresholds,
   getAllReportScheduleTimes,
   updateAllReportScheduleTimes,
+  insertWebNotification,
   getWebNotifications,
-  markNotificationRead,
-  insertWebNotification
+  markNotificationRead
 } = require('./services/supabaseClient');
 
 const {
@@ -36,19 +32,19 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // ===============================
-// 🔧 MIDDLEWARE
+// MIDDLEWARE
 // ===============================
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// homepage fallback (important for Render)
+// homepage fallback
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // ===============================
-// 🔁 DYNAMIC STATE
+// STATE
 // ===============================
 
 let ALERT_THRESHOLDS = {};
@@ -59,7 +55,7 @@ let dailyReportScheduleTimes = [];
 let dailyReportCronJobs = [];
 
 // ===============================
-// 🤖 TELEGRAM WEBHOOK
+// TELEGRAM WEBHOOK
 // ===============================
 
 app.post('/api/telegram-webhook', async (req, res) => {
@@ -72,52 +68,46 @@ app.post('/api/telegram-webhook', async (req, res) => {
       const chatId = msg.chat.id;
       const text = msg.text;
 
-      console.log(`📩 Telegram command: ${text} from ${chatId}`);
+      console.log(`📩 Telegram: ${text} from ${chatId}`);
 
       if (text === '/start') {
-        const userInfo = {
+        await addSubscriber({
           chat_id: chatId,
           first_name: msg.chat.first_name || 'User',
           username: msg.chat.username
-        };
-
-        await addSubscriber(userInfo);
+        });
 
         await bot.sendMessage(
           chatId,
-          `Welcome, *${userInfo.first_name}*! ✌️\n\nYou are now subscribed.\n\nCommands:\n/status\n/stop`,
+          `Welcome! ✌️\n\nCommands:\n/status\n/stop`,
           { parse_mode: 'Markdown' }
         );
       }
 
       else if (text === '/stop') {
         await updateSubscription(chatId, false);
-        await bot.sendMessage(chatId, 'Unsubscribed. Type /start to subscribe again.');
+        await bot.sendMessage(chatId, 'Unsubscribed.');
       }
 
       else if (text === '/status') {
-        await bot.sendMessage(chatId, 'Fetching latest data...');
-        const latestData = await getLatestSensorData();
-        const formattedMessage = formatLatestData(latestData);
-
-        await bot.sendMessage(chatId, formattedMessage, {
-          parse_mode: 'Markdown'
-        });
+        const latest = await getLatestSensorData();
+        const msgText = formatLatestData(latest);
+        await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
       }
 
       else {
-        await bot.sendMessage(chatId, 'Unknown command. Use /start, /stop, or /status.');
+        await bot.sendMessage(chatId, 'Unknown command.');
       }
     }
-  } catch (error) {
-    console.error('Telegram webhook error:', error);
+  } catch (err) {
+    console.error('Telegram webhook error:', err);
   }
 
   res.sendStatus(200);
 });
 
 // ===============================
-// 📊 DASHBOARD APIs
+// DASHBOARD APIs
 // ===============================
 
 // latest data
@@ -132,7 +122,7 @@ app.get('/api/data', async (req, res) => {
   }
 });
 
-// historical graph
+// graph data
 app.get('/api/graph-data', async (req, res) => {
   const { type, range } = req.query;
 
@@ -142,8 +132,7 @@ app.get('/api/graph-data', async (req, res) => {
 
   try {
     const d = await getHistoricalData(type, range);
-    if (!d?.length) return res.status(204).send();
-    res.json(d);
+    res.json(d || []);
   } catch (e) {
     console.error('/api/graph-data error:', e);
     res.status(500).json({ error: 'Fetch failed' });
@@ -151,10 +140,9 @@ app.get('/api/graph-data', async (req, res) => {
 });
 
 // ===============================
-// 🔔 WEB NOTIFICATIONS APIs
+// 🔔 WEB NOTIFICATIONS
 // ===============================
 
-// get notifications
 app.get('/api/notifications', async (req, res) => {
   try {
     const data = await getWebNotifications();
@@ -165,7 +153,6 @@ app.get('/api/notifications', async (req, res) => {
   }
 });
 
-// mark read
 app.post('/api/notifications/read/:id', async (req, res) => {
   try {
     await markNotificationRead(req.params.id);
@@ -177,7 +164,7 @@ app.post('/api/notifications/read/:id', async (req, res) => {
 });
 
 // ===============================
-// ⚠️ THRESHOLDS APIs
+// ⚙️ THRESHOLDS
 // ===============================
 
 app.get('/api/get-thresholds', async (req, res) => {
@@ -194,14 +181,9 @@ app.get('/api/get-thresholds', async (req, res) => {
 });
 
 app.post('/api/set-thresholds', async (req, res) => {
-  const nt = req.body;
-
-  if (!nt || !Object.keys(nt).length) {
-    return res.status(400).json({ error: 'No thresholds' });
-  }
-
   try {
-    const success = await updateThresholds(nt);
+    const success = await updateThresholds(req.body);
+
     if (success) {
       await loadThresholdsFromDB();
       return res.json({ message: 'Updated' });
@@ -215,7 +197,7 @@ app.post('/api/set-thresholds', async (req, res) => {
 });
 
 // ===============================
-// 📅 REPORT SCHEDULING
+// 📅 REPORT TIMES
 // ===============================
 
 app.get('/api/get-report-time', (req, res) => {
@@ -223,14 +205,9 @@ app.get('/api/get-report-time', (req, res) => {
 });
 
 app.post('/api/set-report-time', async (req, res) => {
-  const { report_times } = req.body;
-
-  if (!Array.isArray(report_times)) {
-    return res.status(400).json({ error: 'Invalid times' });
-  }
-
   try {
-    const success = await updateAllReportScheduleTimes(report_times);
+    const success = await updateAllReportScheduleTimes(req.body.report_times);
+
     if (success) {
       await loadAndScheduleReports();
       return res.json({ message: 'Updated' });
@@ -253,7 +230,7 @@ async function sendAlertToAll(messages) {
 
   await sendStructuredAlert(chatIds, 'ALERT', messages);
 
-  // 🔔 ALSO SAVE TO WEB NOTIFICATIONS
+  // also save to bell
   for (const msg of messages) {
     await insertWebNotification('System Alert', msg, 'alert');
   }
@@ -338,7 +315,7 @@ const alertingEngine = {
 };
 
 // ===============================
-// ⚙️ INITIALIZATION
+// INIT
 // ===============================
 
 async function loadThresholdsFromDB() {
@@ -362,8 +339,7 @@ async function sendDailyReport() {
     const data = await getLatestSensorData();
 
     if (data && chatIds.length) {
-      const msgs = [formatLatestData(data)];
-      await sendStructuredAlert(chatIds, 'REPORT', msgs);
+      await sendStructuredAlert(chatIds, 'REPORT', [formatLatestData(data)]);
     }
   } catch (e) {
     console.error('Daily report error:', e);
@@ -394,24 +370,21 @@ async function loadAndScheduleReports() {
 }
 
 // ===============================
-// 🚀 START APP
+// START
 // ===============================
 
 async function initializeApp() {
   try {
-    console.log('🚀 Initializing backend...');
-
     await loadThresholdsFromDB();
     await loadAndScheduleReports();
     await startTelegramBot();
     startMqttClient(alertingEngine);
 
     app.listen(PORT, () => {
-      console.log(`✅ Server listening on port ${PORT}`);
+      console.log(`✅ Server running on ${PORT}`);
     });
-
   } catch (e) {
-    console.error('💥 CRITICAL INIT ERROR:', e);
+    console.error('CRITICAL INIT ERROR:', e);
     process.exit(1);
   }
 }
