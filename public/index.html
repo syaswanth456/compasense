@@ -42,6 +42,8 @@
       align-items: center;
       justify-content: space-between;
       margin-bottom: 32px;
+      flex-wrap: wrap;
+      gap: 16px;
     }
 
     .header-left h1 {
@@ -56,6 +58,7 @@
       display: flex;
       gap: 12px;
       align-items: center;
+      flex-wrap: wrap;
     }
 
     .icon-btn {
@@ -82,22 +85,41 @@
       transform: translateY(-2px);
     }
 
-    .badge {
-      position: absolute;
-      top: -4px;
-      right: -4px;
-      background: #ef4444;
-      color: white;
-      font-size: 0.7rem;
-      font-weight: 600;
-      min-width: 18px;
-      height: 18px;
-      border-radius: 18px;
+    .allow-notifications-btn {
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 40px;
+      padding: 8px 18px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: #14b8a6;
+      cursor: pointer;
       display: flex;
       align-items: center;
-      justify-content: center;
-      padding: 0 4px;
-      border: 2px solid white;
+      gap: 8px;
+      box-shadow: 0 4px 10px -2px rgba(0, 0, 0, 0.05);
+      transition: all 0.2s ease;
+    }
+
+    .allow-notifications-btn:hover {
+      background: #f0fdfa;
+      border-color: #14b8a6;
+      transform: translateY(-2px);
+      box-shadow: 0 8px 18px -6px rgba(20, 184, 166, 0.2);
+    }
+
+    .allow-notifications-btn i {
+      font-size: 1rem;
+    }
+
+    .permission-helper {
+      font-size: 0.8rem;
+      color: #ef4444;
+      margin-left: 8px;
+      background: #fee2e2;
+      padding: 4px 12px;
+      border-radius: 40px;
+      white-space: nowrap;
     }
 
     /* --- card base --- */
@@ -583,12 +605,19 @@
       .trend-header { flex-direction: column; align-items: flex-start; }
       .modal { padding: 24px 20px; }
       .chart-container { height: 240px; }
+      .header-right {
+        width: 100%;
+        justify-content: flex-end;
+      }
+      .allow-notifications-btn {
+        white-space: nowrap;
+      }
     }
 
     @media (max-width: 480px) {
       .metrics-grid { grid-template-columns: 1fr; }
       .header { flex-direction: column; align-items: flex-start; gap: 16px; }
-      .header-right { align-self: flex-end; }
+      .header-right { align-self: flex-end; width: auto; }
       .chart-container { height: 200px; }
     }
   </style>
@@ -601,10 +630,10 @@
       <h1>CampusSense</h1>
     </div>
     <div class="header-right">
+      <div id="notificationPermissionContainer" style="display: flex; align-items: center; gap: 8px;"></div>
       <button class="icon-btn" id="settingsBtn" aria-label="settings"><i class="fas fa-cog"></i></button>
       <button class="icon-btn" id="notificationsBtn" aria-label="notifications">
         <i class="fas fa-bell"></i>
-        <span id="notificationBadge" class="badge" style="display: none;">0</span>
       </button>
       <button class="icon-btn" aria-label="share"><i class="fas fa-paper-plane"></i></button>
     </div>
@@ -1155,10 +1184,9 @@
       }
     });
 
-    // ----- notification modal with dynamic times + real API -----
+    // ----- notification modal with dynamic times + real API (FIXED SAVE) -----
     const notificationModal = document.getElementById('notificationModal');
     const notificationsBtn = document.getElementById('notificationsBtn');
-    const notificationBadge = document.getElementById('notificationBadge');
     const timeInputsContainer = document.getElementById('timeInputsContainer');
     const addTimeBtn = document.getElementById('addTimeBtn');
     const notifRate = document.getElementById('notifRate');
@@ -1178,25 +1206,6 @@
         notifPrefs.rate = data.rate || 'immediate';
       } catch (err) {
         console.warn('Could not load report times, using defaults:', err);
-      }
-    }
-
-    async function fetchNotificationCount() {
-      try {
-        const response = await fetch('/api/notifications');
-        if (!response.ok) throw new Error('Failed to fetch notifications');
-        const data = await response.json();
-        // API can return { unread: number } or an array
-        const count = data.unread || (Array.isArray(data) ? data.length : 0);
-        if (count > 0) {
-          notificationBadge.style.display = 'flex';
-          notificationBadge.textContent = count > 99 ? '99+' : count;
-        } else {
-          notificationBadge.style.display = 'none';
-        }
-      } catch (err) {
-        console.warn('Could not fetch notification count:', err);
-        notificationBadge.style.display = 'none';
       }
     }
 
@@ -1234,10 +1243,16 @@
       const inputs = document.querySelectorAll('.dynamic-time');
       const newTimes = [];
       inputs.forEach(input => {
-        if (input.value) newTimes.push(input.value);
+        const val = input.value.trim();
+        if (val) newTimes.push(val);
       });
-      if (newTimes.length === 0) newTimes.push('09:00');
-      notifPrefs.times = newTimes;
+      // Remove duplicates (keep order)
+      notifPrefs.times = [...new Set(newTimes)];
+    }
+
+    function validateTimes(times) {
+      const timeRegex = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/;
+      return times.filter(t => timeRegex.test(t));
     }
 
     async function openNotificationModal() {
@@ -1253,7 +1268,6 @@
 
     notificationsBtn.addEventListener('click', async () => {
       await openNotificationModal();
-      fetchNotificationCount();
     });
 
     notificationModal.addEventListener('click', (e) => {
@@ -1264,14 +1278,16 @@
 
     saveNotificationBtn.addEventListener('click', async () => {
       syncTimesFromInputs();
-      if (notifPrefs.times.length === 0) {
-        showToast('Please add at least one report time', 'error');
+      const validTimes = validateTimes(notifPrefs.times);
+      if (validTimes.length === 0) {
+        showToast('Please add at least one valid time in HH:MM format', 'error');
         return;
       }
-      const payload = {
-        report_times: notifPrefs.times,
-        rate: notifRate.value
-      };
+      // Remove duplicates just in case
+      const uniqueTimes = [...new Set(validTimes)];
+      
+      // Payload MUST be { report_times: array } only — no rate per spec
+      const payload = { report_times: uniqueTimes };
 
       saveNotificationBtn.disabled = true;
       saveNotificationBtn.innerHTML = `<span>Saving...</span><div class="spinner"></div>`;
@@ -1283,7 +1299,8 @@
           body: JSON.stringify(payload)
         });
         if (!response.ok) throw new Error('Save failed');
-        notifPrefs.rate = payload.rate;
+        // Update local prefs with saved times (rate stays as previously loaded)
+        notifPrefs.times = uniqueTimes;
         showToast('Notification preferences saved', 'success');
         closeNotificationModal();
       } catch (err) {
@@ -1294,15 +1311,85 @@
       }
     });
 
+    // ----- Browser Notification Handling -----
+    const permissionContainer = document.getElementById('notificationPermissionContainer');
+    let lastNotificationId = null; // to avoid duplicates
+
+    function updateNotificationUI() {
+      if (!('Notification' in window)) {
+        // Not supported, hide button
+        permissionContainer.innerHTML = '';
+        return;
+      }
+      const permission = Notification.permission;
+      if (permission === 'granted') {
+        permissionContainer.innerHTML = '';
+      } else {
+        const isDenied = permission === 'denied';
+        const btnHtml = `
+          <button class="allow-notifications-btn" id="allowNotificationsBtn">
+            <i class="fas fa-bell"></i> Allow Notifications
+          </button>
+          ${isDenied ? '<span class="permission-helper">Blocked — enable in browser settings</span>' : ''}
+        `;
+        permissionContainer.innerHTML = btnHtml;
+        const allowBtn = document.getElementById('allowNotificationsBtn');
+        if (allowBtn) {
+          allowBtn.addEventListener('click', async () => {
+            try {
+              const result = await Notification.requestPermission();
+              if (result === 'granted') {
+                updateNotificationUI();
+              } else {
+                updateNotificationUI(); // shows denied message
+              }
+            } catch (err) {
+              console.warn('Notification permission request failed', err);
+            }
+          });
+        }
+      }
+    }
+
+    // Fetch notifications and show browser notification for new ones
+    async function checkAndShowNotifications() {
+      if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+      try {
+        const response = await fetch('/api/notifications');
+        if (!response.ok) throw new Error('Failed to fetch notifications');
+        const data = await response.json();
+        // Assuming API returns an array of notifications, newest first
+        if (Array.isArray(data) && data.length > 0) {
+          const latest = data[0];
+          const notificationId = latest.id || latest.created_at; // use unique field
+          if (notificationId && lastNotificationId !== notificationId) {
+            // New notification
+            lastNotificationId = notificationId;
+            const title = 'CampusSense Alert';
+            const body = latest.message || 'New sensor reading available';
+            new Notification(title, { body, icon: '/favicon.ico' }); // optional icon
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to check notifications', err);
+      }
+    }
+
+    // Initial UI update
+    updateNotificationUI();
+
     // ----- initial load & intervals -----
     window.addEventListener('load', async () => {
       await refreshAllData();
       await refreshGraph();
       await loadReportTimes();
-      await fetchNotificationCount();
       setInterval(refreshAllData, 7000);
       setInterval(refreshGraph, 15000);
-      setInterval(fetchNotificationCount, 60000);
+      // Poll for new notifications every 30 seconds (if granted)
+      setInterval(checkAndShowNotifications, 30000);
+      // Also check on load
+      checkAndShowNotifications();
     });
 
     // ESC key for both modals
