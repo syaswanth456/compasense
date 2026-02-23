@@ -1,153 +1,161 @@
 // =====================================================
-// Supabase Client Service (Production Ready)
+// CampusSense Main Server (Production Ready)
 // =====================================================
 
-const { createClient } = require('@supabase/supabase-js');
+require('dotenv').config();
+
+const express = require('express');
+const path = require('path');
+
+// ===============================
+// SERVICES
+// ===============================
+
+const {
+  startTelegramBot,
+  getBotInstance,
+  formatStatus
+} = require('./services/telegramBot');
+
+const { startMqttClient } = require('./services/mqttClient');
+
+const {
+  getLatestSensorData,
+  getWebNotifications,
+  markNotificationRead
+} = require('./services/supabaseClient');
+
+// ===============================
+// APP INIT
+// ===============================
+
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+// ===============================
+// MIDDLEWARE
+// ===============================
+
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
 // =====================================================
-// ENV VARIABLES (Render / .env)
+// 🏠 HEALTH ROUTE
 // =====================================================
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY; // ✅ SERVICE ROLE KEY
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error("❌ Supabase ENV variables missing!");
-}
-
-// =====================================================
-// CREATE CLIENT
-// =====================================================
-
-const supabase = createClient(supabaseUrl, supabaseKey, {
-  auth: { persistSession: false }
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // =====================================================
-// SENSOR DATA
+// 📡 API — Latest Sensor Data
 // =====================================================
 
-async function insertSensorData(data) {
+app.get('/api/data', async (req, res) => {
   try {
-    const { error } = await supabase
-      .from('sensor_readings') // ✅ CORRECT TABLE
-      .insert([data]);
+    const data = await getLatestSensorData();
 
-    if (error) {
-      console.error('❌ Sensor insert error:', error.message);
-      return false;
+    if (!data) {
+      return res.status(204).send();
     }
 
-    return true;
+    res.json(data);
   } catch (err) {
-    console.error('❌ Sensor insert exception:', err.message);
-    return false;
+    console.error("❌ /api/data error:", err.message);
+    res.status(500).json({ error: 'fetch failed' });
   }
-}
+});
 
-async function getLatestSensorData() {
+// =====================================================
+// 🔔 NOTIFICATIONS API
+// =====================================================
+
+// get notifications
+app.get('/api/notifications', async (req, res) => {
   try {
-    const { data, error } = await supabase
-      .from('sensor_readings')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) return null;
-    return data;
-  } catch {
-    return null;
+    const data = await getWebNotifications();
+    res.json(data);
+  } catch (err) {
+    console.error("❌ notifications fetch error:", err.message);
+    res.status(500).json({ error: 'fetch failed' });
   }
-}
+});
 
-async function getHistoricalData(type, range) {
+// mark read
+app.post('/api/notifications/read/:id', async (req, res) => {
   try {
-    const now = new Date();
-    let startTime;
+    await markNotificationRead(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("❌ notification update error:", err.message);
+    res.status(500).json({ error: 'update failed' });
+  }
+});
 
-    switch (range) {
-      case '5m':
-        startTime = new Date(now.getTime() - 5 * 60 * 1000);
-        break;
-      case '1h':
-        startTime = new Date(now.getTime() - 60 * 60 * 1000);
-        break;
-      default:
-        startTime = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+// =====================================================
+// 🤖 TELEGRAM WEBHOOK
+// =====================================================
+
+app.post('/api/telegram-webhook', async (req, res) => {
+  const update = req.body;
+  const bot = getBotInstance();
+
+  try {
+    if (update?.message?.text && bot) {
+      const msg = update.message;
+      const chatId = msg.chat.id;
+      const text = msg.text;
+
+      console.log("📩 Telegram:", text);
+
+      if (text === '/start') {
+        await bot.sendMessage(
+          chatId,
+          "✅ Subscribed to CampusSense alerts!\nUse /status to check live data."
+        );
+      }
+
+      else if (text === '/status') {
+        const latest = await getLatestSensorData();
+        const message = formatStatus(latest);
+
+        await bot.sendMessage(chatId, message, {
+          parse_mode: 'Markdown'
+        });
+      }
+
+      else if (text === '/stop') {
+        await bot.sendMessage(chatId, "❌ Unsubscribed.");
+      }
+
+      else {
+        await bot.sendMessage(chatId, "Unknown command.");
+      }
     }
-
-    const { data, error } = await supabase
-      .from('sensor_readings')
-      .select(`created_at, ${type}`)
-      .gt('created_at', startTime.toISOString())
-      .order('created_at', { ascending: true });
-
-    if (error) return [];
-
-    return (data || []).map(r => ({
-      created_at: r.created_at,
-      value: Number(r[type]) || 0
-    }));
-
-  } catch {
-    return [];
+  } catch (err) {
+    console.error("❌ Telegram webhook error:", err.message);
   }
-}
+
+  res.sendStatus(200);
+});
 
 // =====================================================
-// 🔔 WEB NOTIFICATIONS
+// 🚀 START SERVER (CRITICAL)
 // =====================================================
 
-async function insertWebNotification(title, message, type = 'info') {
-  try {
-    const { error } = await supabase
-      .from('web_notifications') // ✅ CORRECT TABLE
-      .insert([{ title, message, type, is_read: false }]);
+async function startServer() {
+  console.log("🚀 Starting CampusSense backend...");
 
-    if (error) {
-      console.error('❌ Notification insert error:', error.message);
-      return false;
-    }
+  // ✅ start telegram (safe if missing)
+  startTelegramBot();
 
-    return true;
-  } catch {
-    return false;
-  }
+  // ✅ start mqtt
+  startMqttClient();
+
+  // ⭐ KEEP SERVER ALIVE (VERY IMPORTANT FOR RENDER)
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Server running on port ${PORT}`);
+  });
 }
 
-async function getWebNotifications(limit = 20) {
-  try {
-    const { data, error } = await supabase
-      .from('web_notifications')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(limit);
-
-    if (error) return [];
-    return data || [];
-  } catch {
-    return [];
-  }
-}
-
-async function markNotificationRead(id) {
-  await supabase
-    .from('web_notifications')
-    .update({ is_read: true })
-    .eq('id', id);
-}
-
-// =====================================================
-// EXPORTS
-// =====================================================
-
-module.exports = {
-  supabase,
-  insertSensorData,
-  getLatestSensorData,
-  getHistoricalData,
-  insertWebNotification,
-  getWebNotifications,
-  markNotificationRead
-};
+startServer();
