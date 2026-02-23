@@ -4,21 +4,12 @@
 
 const { createClient } = require('@supabase/supabase-js');
 
-// =====================================================
-// ENV VARIABLES (Render / .env)
-// =====================================================
-
-// ✅ IMPORTANT: use SERVICE ROLE key for backend
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
   console.error("❌ FATAL: Supabase ENV variables missing!");
 }
-
-// =====================================================
-// CREATE CLIENT
-// =====================================================
 
 const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false }
@@ -31,7 +22,7 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 async function insertSensorData(data) {
   try {
     const { error } = await supabase
-      .from('sensor_readings') // ✅ correct table
+      .from('sensor_data') // ✅ FIXED
       .insert([data]);
 
     if (error) {
@@ -51,20 +42,15 @@ async function insertSensorData(data) {
 async function getLatestSensorData() {
   try {
     const { data, error } = await supabase
-      .from('sensor_readings')
+      .from('sensor_data') // ✅ FIXED
       .select('*')
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (error) {
-      console.error('❌ Latest fetch error:', error.message);
-      return null;
-    }
-
+    if (error) return null;
     return data;
-  } catch (err) {
-    console.error('❌ Latest fetch exception:', err.message);
+  } catch {
     return null;
   }
 }
@@ -86,53 +72,36 @@ async function getHistoricalData(type, range) {
     }
 
     const { data, error } = await supabase
-      .from('sensor_readings')
+      .from('sensor_data') // ✅ FIXED
       .select(`created_at, ${type}`)
       .gt('created_at', startTime.toISOString())
       .order('created_at', { ascending: true });
 
-    if (error) {
-      console.error('❌ History fetch error:', error.message);
-      return [];
-    }
+    if (error) return [];
 
-    // normalize for chart
     return (data || []).map(row => ({
       created_at: row.created_at,
       value: Number(row[type]) || 0
     }));
 
-  } catch (err) {
-    console.error('❌ History exception:', err.message);
+  } catch {
     return [];
   }
 }
 
 // =====================================================
-// 🔔 WEB NOTIFICATIONS (Bell)
+// 🔔 WEB NOTIFICATIONS
 // =====================================================
 
 async function insertWebNotification(title, message, type = 'info') {
   try {
     const { error } = await supabase
-      .from('web_notifications') // ✅ correct table
-      .insert([{
-        title,
-        message,
-        type,
-        is_read: false
-      }]);
+      .from('notifications') // ✅ FIXED
+      .insert([{ title, message, type, is_read: false }]);
 
-    if (error) {
-      console.error('❌ Notification insert error:', error.message);
-      return false;
-    }
-
-    console.log('🔔 Notification stored');
+    if (error) return false;
     return true;
-
-  } catch (err) {
-    console.error('❌ Notification exception:', err.message);
+  } catch {
     return false;
   }
 }
@@ -140,47 +109,24 @@ async function insertWebNotification(title, message, type = 'info') {
 async function getWebNotifications(limit = 20) {
   try {
     const { data, error } = await supabase
-      .from('web_notifications')
+      .from('notifications') // ✅ FIXED
       .select('*')
       .order('created_at', { ascending: false })
       .limit(limit);
 
-    if (error) {
-      console.error('❌ Notification fetch error:', error.message);
-      return [];
-    }
-
+    if (error) return [];
     return data || [];
-
-  } catch (err) {
-    console.error('❌ Notification fetch exception:', err.message);
+  } catch {
     return [];
   }
 }
 
 async function markNotificationRead(id) {
-  try {
-    const { error } = await supabase
-      .from('web_notifications')
-      .update({ is_read: true })
-      .eq('id', id);
-
-    if (error) {
-      console.error('❌ Notification update error:', error.message);
-      return false;
-    }
-
-    return true;
-
-  } catch (err) {
-    console.error('❌ Notification update exception:', err.message);
-    return false;
-  }
+  await supabase
+    .from('notifications') // ✅ FIXED
+    .update({ is_read: true })
+    .eq('id', id);
 }
-
-// =====================================================
-// 📦 EXPORTS
-// =====================================================
 
 module.exports = {
   supabase,
