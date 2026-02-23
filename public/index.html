@@ -55,6 +55,7 @@
     .header-right {
       display: flex;
       gap: 12px;
+      align-items: center;
     }
 
     .icon-btn {
@@ -71,6 +72,7 @@
       justify-content: center;
       cursor: pointer;
       transition: all 0.2s ease;
+      position: relative;
     }
 
     .icon-btn:hover {
@@ -78,6 +80,24 @@
       color: #14b8a6;
       box-shadow: 0 8px 18px -6px rgba(20, 184, 166, 0.2);
       transform: translateY(-2px);
+    }
+
+    .badge {
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      background: #ef4444;
+      color: white;
+      font-size: 0.7rem;
+      font-weight: 600;
+      min-width: 18px;
+      height: 18px;
+      border-radius: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 4px;
+      border: 2px solid white;
     }
 
     /* --- card base --- */
@@ -556,7 +576,10 @@
     </div>
     <div class="header-right">
       <button class="icon-btn" id="settingsBtn" aria-label="settings"><i class="fas fa-cog"></i></button>
-      <button class="icon-btn" id="notificationsBtn" aria-label="notifications"><i class="fas fa-bell"></i></button>
+      <button class="icon-btn" id="notificationsBtn" aria-label="notifications">
+        <i class="fas fa-bell"></i>
+        <span id="notificationBadge" class="badge" style="display: none;">0</span>
+      </button>
       <button class="icon-btn" aria-label="share"><i class="fas fa-paper-plane"></i></button>
     </div>
   </header>
@@ -741,7 +764,7 @@
     <div class="form-group">
       <label for="notifRate">Alert Frequency</label>
       <select id="notifRate">
-        <option value="immediate" selected>Immediately</option>
+        <option value="immediate">Immediately</option>
         <option value="15min">Every 15 minutes</option>
         <option value="30min">Every 30 minutes</option>
         <option value="hourly">Every hour</option>
@@ -806,7 +829,7 @@
         const response = await fetch('/api/data');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
-        return data; // expecting { bmp_temp, dht_temp, humidity, aqi, uv, pressure, rain_percentage, light_level, created_at }
+        return data;
       } catch (err) {
         console.warn('Failed to fetch latest data:', err);
         return null;
@@ -818,7 +841,7 @@
         const url = `/api/graph-data?type=${encodeURIComponent(metric)}&range=${encodeURIComponent(range)}`;
         const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const json = await response.json(); // expecting array of { created_at, value }
+        const json = await response.json();
         return json;
       } catch (err) {
         console.warn('Failed to fetch graph data:', err);
@@ -830,12 +853,10 @@
     function updateDashboard(data) {
       if (!data) return;
 
-      // AQI gauge: assume max 1000 ppm
       const aqiPercent = Math.min(100, (data.aqi / 1000) * 100);
       setGauge(aqiCircle, aqiPercent);
       aqiValueSpan.textContent = data.aqi?.toFixed?.(0) ?? '--';
 
-      // UV gauge: max 11
       const uvPercent = Math.min(100, (data.uv / 11) * 100);
       setGauge(uvCircle, uvPercent);
       uvValueSpan.textContent = data.uv?.toFixed?.(1) ?? '--';
@@ -845,7 +866,6 @@
       humiditySpan.textContent = data.humidity?.toFixed?.(0) ?? '--';
       pressureSpan.textContent = data.pressure?.toFixed?.(0) ?? '--';
 
-      // Rain percentage and derived status
       const rainPct = data.rain_percentage;
       if (rainPct != null) {
         rainPctSpan.textContent = Math.round(rainPct);
@@ -858,7 +878,6 @@
         rainStatusSpan.textContent = '--';
       }
 
-      // Brightness from light_level
       const light = data.light_level;
       if (light != null) {
         brightnessPctSpan.textContent = Math.round(light);
@@ -884,10 +903,6 @@
             return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           });
           seriesData = graphArray.map(item => item.value);
-        } else {
-          // fallback empty
-          categories = [];
-          seriesData = [];
         }
 
         const series = [{ name: currentMetric.replace('_', ' ').toUpperCase(), data: seriesData }];
@@ -970,15 +985,7 @@
       });
     });
 
-    // ----- initial load & intervals -----
-    window.addEventListener('load', async () => {
-      await refreshAllData();
-      await refreshGraph();
-      setInterval(refreshAllData, 7000);
-      setInterval(refreshGraph, 15000);
-    });
-
-    // ----- settings modal logic (unchanged) -----
+    // ----- settings modal logic (real API) -----
     const settingsModal = document.getElementById('settingsModal');
     const settingsBtn = document.getElementById('settingsBtn');
     const thAqi = document.getElementById('th_aqi');
@@ -990,27 +997,33 @@
     const suggestBtn = document.getElementById('suggestBtn');
     const resetBtn = document.getElementById('resetBtn');
 
-    let currentThresholds = {
-      aqi: 450,
-      uv: 7.0,
-      bmp_temp: 28.0,
-      pressure: 990,
-      rain_percentage: 70
-    };
-
-    function openSettingsModal() {
+    // Fetch thresholds from API when opening modal
+    async function openSettingsModal() {
       settingsModal.classList.add('active');
       saveThresholdsBtn.disabled = true;
       saveThresholdsBtn.innerHTML = `<span>Loading...</span><div class="spinner"></div>`;
-      setTimeout(() => {
-        thAqi.value = currentThresholds.aqi;
-        thUv.value = currentThresholds.uv;
-        thBmp.value = currentThresholds.bmp_temp;
-        thPressure.value = currentThresholds.pressure;
-        thRain.value = currentThresholds.rain_percentage;
+
+      try {
+        const response = await fetch('/api/get-thresholds');
+        if (!response.ok) throw new Error('Failed to fetch thresholds');
+        const data = await response.json();
+        thAqi.value = data.aqi ?? 450;
+        thUv.value = data.uv ?? 7.0;
+        thBmp.value = data.bmp_temp ?? 28.0;
+        thPressure.value = data.pressure ?? 990;
+        thRain.value = data.rain_percentage ?? 70;
+      } catch (err) {
+        console.warn('Could not load thresholds, using defaults:', err);
+        // fallback to defaults
+        thAqi.value = 450;
+        thUv.value = 7.0;
+        thBmp.value = 28.0;
+        thPressure.value = 990;
+        thRain.value = 70;
+      } finally {
         saveThresholdsBtn.disabled = false;
         saveThresholdsBtn.innerHTML = `<span>Save Thresholds</span>`;
-      }, 500);
+      }
     }
 
     function closeSettingsModal() {
@@ -1023,6 +1036,7 @@
     });
 
     suggestBtn.addEventListener('click', () => {
+      // mock suggestion based on 24h history; keep as is
       thAqi.value = 380 + Math.floor(Math.random() * 100);
       thUv.value = (5 + Math.random() * 3).toFixed(1);
       thBmp.value = (26 + Math.random() * 4).toFixed(1);
@@ -1038,7 +1052,7 @@
       thRain.value = 80;
     });
 
-    saveThresholdsBtn.addEventListener('click', () => {
+    saveThresholdsBtn.addEventListener('click', async () => {
       const payload = {
         aqi: parseInt(thAqi.value, 10),
         uv: parseFloat(thUv.value),
@@ -1054,18 +1068,27 @@
       saveThresholdsBtn.disabled = true;
       saveThresholdsBtn.innerHTML = `<span>Saving...</span><div class="spinner"></div>`;
 
-      setTimeout(() => {
-        currentThresholds = { ...payload };
-        saveThresholdsBtn.disabled = false;
-        saveThresholdsBtn.innerHTML = `<span>Save Thresholds</span>`;
+      try {
+        const response = await fetch('/api/set-thresholds', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error('Save failed');
         showToast('Thresholds updated successfully', 'success');
         closeSettingsModal();
-      }, 800);
+      } catch (err) {
+        console.error(err);
+        showToast('Failed to save thresholds', 'error');
+        saveThresholdsBtn.disabled = false;
+        saveThresholdsBtn.innerHTML = `<span>Save Thresholds</span>`;
+      }
     });
 
-    // ----- notification modal logic (unchanged) -----
+    // ----- notification modal with dynamic times + real API -----
     const notificationModal = document.getElementById('notificationModal');
     const notificationsBtn = document.getElementById('notificationsBtn');
+    const notificationBadge = document.getElementById('notificationBadge');
     const timeInputsContainer = document.getElementById('timeInputsContainer');
     const addTimeBtn = document.getElementById('addTimeBtn');
     const notifRate = document.getElementById('notifRate');
@@ -1076,6 +1099,41 @@
       rate: 'immediate'
     };
 
+    // Fetch notification preferences on page load
+    async function loadReportTimes() {
+      try {
+        const response = await fetch('/api/get-report-time');
+        if (!response.ok) throw new Error('Failed to fetch report times');
+        const data = await response.json();
+        // Assuming API returns { report_times: array, rate: string }
+        notifPrefs.times = data.report_times || ['09:00', '12:00', '18:00'];
+        notifPrefs.rate = data.rate || 'immediate';
+      } catch (err) {
+        console.warn('Could not load report times, using defaults:', err);
+      }
+    }
+
+    // Fetch unread notifications count
+    async function fetchNotificationCount() {
+      try {
+        const response = await fetch('/api/notifications');
+        if (!response.ok) throw new Error('Failed to fetch notifications');
+        const data = await response.json();
+        // Assuming API returns { unread: number } or an array with unread count
+        const count = data.unread || (Array.isArray(data) ? data.length : 0);
+        if (count > 0) {
+          notificationBadge.style.display = 'flex';
+          notificationBadge.textContent = count > 99 ? '99+' : count;
+        } else {
+          notificationBadge.style.display = 'none';
+        }
+      } catch (err) {
+        console.warn('Could not fetch notification count:', err);
+        notificationBadge.style.display = 'none';
+      }
+    }
+
+    // render time inputs from notifPrefs.times
     function renderTimeInputs() {
       timeInputsContainer.innerHTML = '';
       notifPrefs.times.forEach((time, index) => {
@@ -1116,7 +1174,9 @@
       notifPrefs.times = newTimes;
     }
 
-    function openNotificationModal() {
+    async function openNotificationModal() {
+      // Refresh prefs from server before opening
+      await loadReportTimes();
       notificationModal.classList.add('active');
       renderTimeInputs();
       notifRate.value = notifPrefs.rate;
@@ -1126,29 +1186,60 @@
       notificationModal.classList.remove('active');
     }
 
-    notificationsBtn.addEventListener('click', openNotificationModal);
+    notificationsBtn.addEventListener('click', async () => {
+      await openNotificationModal();
+      // Also fetch fresh notification count on open
+      fetchNotificationCount();
+    });
+
     notificationModal.addEventListener('click', (e) => {
       if (e.target === notificationModal) closeNotificationModal();
     });
 
     addTimeBtn.addEventListener('click', addTime);
 
-    saveNotificationBtn.addEventListener('click', () => {
+    saveNotificationBtn.addEventListener('click', async () => {
       syncTimesFromInputs();
       if (notifPrefs.times.length === 0) {
         showToast('Please add at least one report time', 'error');
         return;
       }
-      notifPrefs.rate = notifRate.value;
+      const payload = {
+        report_times: notifPrefs.times,
+        rate: notifRate.value
+      };
+
       saveNotificationBtn.disabled = true;
       saveNotificationBtn.innerHTML = `<span>Saving...</span><div class="spinner"></div>`;
 
-      setTimeout(() => {
-        saveNotificationBtn.disabled = false;
-        saveNotificationBtn.innerHTML = `<span>Save Preferences</span>`;
+      try {
+        const response = await fetch('/api/set-report-time', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error('Save failed');
+        notifPrefs.rate = payload.rate; // update local
         showToast('Notification preferences saved', 'success');
         closeNotificationModal();
-      }, 700);
+      } catch (err) {
+        console.error(err);
+        showToast('Failed to save preferences', 'error');
+        saveNotificationBtn.disabled = false;
+        saveNotificationBtn.innerHTML = `<span>Save Preferences</span>`;
+      }
+    });
+
+    // ----- initial load & intervals -----
+    window.addEventListener('load', async () => {
+      await refreshAllData();
+      await refreshGraph();
+      await loadReportTimes(); // preload times for next modal open
+      await fetchNotificationCount(); // initial badge
+      setInterval(refreshAllData, 7000);
+      setInterval(refreshGraph, 15000);
+      // Optionally refresh badge occasionally (e.g., every 60s)
+      setInterval(fetchNotificationCount, 60000);
     });
 
     // ESC key for both modals
