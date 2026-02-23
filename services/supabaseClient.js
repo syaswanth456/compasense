@@ -8,7 +8,7 @@ const { createClient } = require('@supabase/supabase-js');
 // ENV VARIABLES (Render / .env)
 // =====================================================
 
-// ✅ MUST use SERVICE ROLE key
+// ⚠️ MUST be SERVICE ROLE key
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 
@@ -25,8 +25,8 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 // =====================================================
-// 📡 SENSOR DATA
-// Table: sensor_data
+// 📡 SENSOR DATA FUNCTIONS
+// Table: public.sensor_data
 // =====================================================
 
 async function insertSensorData(data) {
@@ -112,7 +112,7 @@ async function getHistoricalData(type, range) {
 
 // =====================================================
 // 🔔 WEB NOTIFICATIONS (Bell)
-// Table: notifications
+// Table: public.notifications
 // =====================================================
 
 async function insertWebNotification(title, message, type = 'info') {
