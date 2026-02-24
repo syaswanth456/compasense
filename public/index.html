@@ -377,10 +377,35 @@
       padding: 32px 28px;
       transform: scale(0.95);
       transition: transform 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.1);
+      position: relative;
     }
 
     .modal-overlay.active .modal {
       transform: scale(1);
+    }
+
+    .modal-close {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: #f1f5f9;
+      border: none;
+      color: #64748b;
+      font-size: 1.2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .modal-close:hover {
+      background: #e2e8f0;
+      color: #0f172a;
+      transform: rotate(90deg);
     }
 
     .modal h2 {
@@ -391,6 +416,7 @@
       gap: 10px;
       color: #0f172a;
       margin-bottom: 8px;
+      padding-right: 30px;
     }
 
     .modal-sub {
@@ -762,6 +788,7 @@
 <!-- Settings Modal (Thresholds) -->
 <div class="modal-overlay" id="settingsModal">
   <div class="modal">
+    <button class="modal-close" id="closeSettingsBtn" aria-label="Close"><i class="fas fa-times"></i></button>
     <h2>⚙️ Control Thresholds</h2>
     <div class="modal-sub">Set values to trigger alerts. Use suggestions or enter manually.</div>
 
@@ -809,6 +836,7 @@
 <!-- Notification Settings Modal (Bell) with dynamic times -->
 <div class="modal-overlay" id="notificationModal">
   <div class="modal">
+    <button class="modal-close" id="closeNotificationBtn" aria-label="Close"><i class="fas fa-times"></i></button>
     <h2>🔔 Notification Preferences</h2>
     <div class="modal-sub">Configure daily report times (add multiple) and alert frequency.</div>
 
@@ -863,7 +891,7 @@
 
     const toastContainer = document.getElementById('toastContainer');
 
-    // ----- helper: show toast (used by modals) -----
+    // ----- helper: show toast -----
     function showToast(message, type = 'success') {
       const toast = document.createElement('div');
       toast.className = `toast ${type}`;
@@ -910,10 +938,12 @@
     function updateDashboard(data) {
       if (!data) return;
 
+      // AQI gauge: max 1000
       const aqiPercent = Math.min(100, (data.aqi / 1000) * 100);
       setGauge(aqiCircle, aqiPercent);
       aqiValueSpan.textContent = data.aqi?.toFixed?.(0) ?? '--';
 
+      // UV gauge: max 11
       const uvPercent = Math.min(100, (data.uv / 11) * 100);
       setGauge(uvCircle, uvPercent);
       uvValueSpan.textContent = data.uv?.toFixed?.(1) ?? '--';
@@ -935,6 +965,7 @@
         rainStatusSpan.textContent = '--';
       }
 
+      // Brightness from light_level
       const light = data.light_level;
       if (light != null) {
         brightnessPctSpan.textContent = Math.round(light);
@@ -955,7 +986,6 @@
         let seriesData = [];
 
         if (graphArray && Array.isArray(graphArray) && graphArray.length > 0) {
-          // Format x-axis labels based on range for better readability
           const formatOptions = currentRange === '5m' ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } :
                                currentRange === '1h' ? { hour: '2-digit', minute: '2-digit' } :
                                { hour: '2-digit', minute: '2-digit' };
@@ -971,15 +1001,12 @@
 
         const series = [{ name: currentMetric.replace('_', ' ').toUpperCase(), data: seriesData }];
 
-        // Y-axis padding function to ensure line never touches edges
         const yaxisPadding = (value, isMin) => {
           if (value === undefined || value === null) return undefined;
-          // Add 10% padding, but at least 1 unit of padding
           const padding = Math.max(1, Math.abs(value) * 0.1);
           return isMin ? value - padding : value + padding;
         };
 
-        // Common options
         const baseOptions = {
           chart: {
             type: 'area',
@@ -998,22 +1025,16 @@
           series: series,
           xaxis: {
             categories: categories,
-            labels: { 
-              style: { colors: '#64748b', fontSize: '12px' },
-              rotate: 0,
-              trim: true,
-              maxHeight: 60,
-            },
+            labels: { style: { colors: '#64748b', fontSize: '12px' }, rotate: 0, trim: true, maxHeight: 60 },
             axisBorder: { show: false },
             axisTicks: { show: false },
-            tickAmount: currentRange === '24h' ? 6 : (currentRange === '1h' ? 6 : 6),
+            tickAmount: currentRange === '24h' ? 6 : 6,
           },
           yaxis: {
             labels: { style: { colors: '#64748b', fontSize: '12px' } },
             forceNiceScale: true,
             tickAmount: 5,
             decimalsInFloat: 1,
-            // Add padding to prevent line touching edges
             min: (min) => seriesData.length ? yaxisPadding(min, true) : undefined,
             max: (max) => seriesData.length ? yaxisPadding(max, false) : undefined,
           },
@@ -1029,11 +1050,7 @@
             xaxis: { lines: { show: true } },
             yaxis: { lines: { show: true } }
           },
-          tooltip: { 
-            theme: 'light',
-            x: { format: 'HH:mm:ss' },
-            y: { formatter: (value) => value?.toFixed?.(2) ?? '--' }
-          },
+          tooltip: { theme: 'light', x: { format: 'HH:mm:ss' }, y: { formatter: (value) => value?.toFixed?.(2) ?? '--' } },
           colors: ['#14b8a6'],
           dataLabels: { enabled: false },
           markers: { size: 0, hover: { size: 4 } }
@@ -1052,13 +1069,12 @@
       }
     }
 
-    // ----- periodic data refresh -----
+    // ----- periodic data refresh (5 sec for data, 15 sec for graph) -----
     async function refreshAllData() {
       const data = await fetchLatestData();
       if (data) updateDashboard(data);
     }
 
-    // ----- pill activation helpers -----
     function setActivePill(containerSelector, value) {
       document.querySelectorAll(containerSelector + ' .pill').forEach(p => p.classList.remove('active'));
       document.querySelectorAll(containerSelector + ' .pill').forEach(p => {
@@ -1089,6 +1105,7 @@
     // ----- settings modal logic (real API) -----
     const settingsModal = document.getElementById('settingsModal');
     const settingsBtn = document.getElementById('settingsBtn');
+    const closeSettingsBtn = document.getElementById('closeSettingsBtn');
     const thAqi = document.getElementById('th_aqi');
     const thUv = document.getElementById('th_uv');
     const thBmp = document.getElementById('th_bmp_temp');
@@ -1114,7 +1131,6 @@
         thRain.value = data.rain_percentage ?? 70;
       } catch (err) {
         console.warn('Could not load thresholds, using defaults:', err);
-        // fallback to defaults
         thAqi.value = 450;
         thUv.value = 7.0;
         thBmp.value = 28.0;
@@ -1131,24 +1147,37 @@
     }
 
     settingsBtn.addEventListener('click', openSettingsModal);
+    closeSettingsBtn.addEventListener('click', closeSettingsModal);
     settingsModal.addEventListener('click', (e) => {
       if (e.target === settingsModal) closeSettingsModal();
     });
 
-    suggestBtn.addEventListener('click', () => {
-      thAqi.value = 380 + Math.floor(Math.random() * 100);
-      thUv.value = (5 + Math.random() * 3).toFixed(1);
-      thBmp.value = (26 + Math.random() * 4).toFixed(1);
-      thPressure.value = 990 + Math.floor(Math.random() * 15);
-      thRain.value = 50 + Math.floor(Math.random() * 30);
+    // Suggest thresholds using latest data
+    suggestBtn.addEventListener('click', async () => {
+      const data = await fetchLatestData();
+      if (!data) {
+        showToast('Not enough data. Using recommended defaults.', 'error');
+        thAqi.value = 2000;
+        thUv.value = 8.0;
+        thBmp.value = 38.0;
+        thPressure.value = 990;
+        thRain.value = 70;
+        return;
+      }
+      thAqi.value = Math.round(data.aqi * 1.2);
+      thUv.value = (data.uv * 1.3).toFixed(1);
+      thBmp.value = (data.bmp_temp + 2).toFixed(1);
+      thPressure.value = Math.round(data.pressure - 10);
+      thRain.value = Math.round(data.rain_percentage * 1.5);
     });
 
+    // Reset to safe defaults
     resetBtn.addEventListener('click', () => {
-      thAqi.value = 500;
+      thAqi.value = 2000;
       thUv.value = 8.0;
-      thBmp.value = 30.0;
-      thPressure.value = 1000;
-      thRain.value = 80;
+      thBmp.value = 38.0;
+      thPressure.value = 990;
+      thRain.value = 70;
     });
 
     saveThresholdsBtn.addEventListener('click', async () => {
@@ -1187,6 +1216,7 @@
     // ----- notification modal with dynamic times + real API (FIXED SAVE) -----
     const notificationModal = document.getElementById('notificationModal');
     const notificationsBtn = document.getElementById('notificationsBtn');
+    const closeNotificationBtn = document.getElementById('closeNotificationBtn');
     const timeInputsContainer = document.getElementById('timeInputsContainer');
     const addTimeBtn = document.getElementById('addTimeBtn');
     const notifRate = document.getElementById('notifRate');
@@ -1266,10 +1296,8 @@
       notificationModal.classList.remove('active');
     }
 
-    notificationsBtn.addEventListener('click', async () => {
-      await openNotificationModal();
-    });
-
+    notificationsBtn.addEventListener('click', openNotificationModal);
+    closeNotificationBtn.addEventListener('click', closeNotificationModal);
     notificationModal.addEventListener('click', (e) => {
       if (e.target === notificationModal) closeNotificationModal();
     });
@@ -1283,24 +1311,27 @@
         showToast('Please add at least one valid time in HH:MM format', 'error');
         return;
       }
-      // Remove duplicates just in case
       const uniqueTimes = [...new Set(validTimes)];
       
-      // Payload MUST be { report_times: array } only — no rate per spec
-      const payload = { report_times: uniqueTimes };
+      // Payload: report_times, alert_rate, timezone
+      const payload = {
+        report_times: uniqueTimes,
+        alert_rate: notifRate.value,
+        timezone: "Asia/Kolkata"
+      };
 
       saveNotificationBtn.disabled = true;
       saveNotificationBtn.innerHTML = `<span>Saving...</span><div class="spinner"></div>`;
 
       try {
-        const response = await fetch('/api/set-report-time', {
+        const response = await fetch('/api/save-settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
         if (!response.ok) throw new Error('Save failed');
-        // Update local prefs with saved times (rate stays as previously loaded)
         notifPrefs.times = uniqueTimes;
+        notifPrefs.rate = payload.alert_rate;
         showToast('Notification preferences saved', 'success');
         closeNotificationModal();
       } catch (err) {
@@ -1313,11 +1344,10 @@
 
     // ----- Browser Notification Handling -----
     const permissionContainer = document.getElementById('notificationPermissionContainer');
-    let lastNotificationId = null; // to avoid duplicates
+    let lastNotificationId = null;
 
     function updateNotificationUI() {
       if (!('Notification' in window)) {
-        // Not supported, hide button
         permissionContainer.innerHTML = '';
         return;
       }
@@ -1341,7 +1371,7 @@
               if (result === 'granted') {
                 updateNotificationUI();
               } else {
-                updateNotificationUI(); // shows denied message
+                updateNotificationUI();
               }
             } catch (err) {
               console.warn('Notification permission request failed', err);
@@ -1351,7 +1381,6 @@
       }
     }
 
-    // Fetch notifications and show browser notification for new ones
     async function checkAndShowNotifications() {
       if (!('Notification' in window) || Notification.permission !== 'granted') return;
 
@@ -1359,16 +1388,14 @@
         const response = await fetch('/api/notifications');
         if (!response.ok) throw new Error('Failed to fetch notifications');
         const data = await response.json();
-        // Assuming API returns an array of notifications, newest first
         if (Array.isArray(data) && data.length > 0) {
           const latest = data[0];
-          const notificationId = latest.id || latest.created_at; // use unique field
+          const notificationId = latest.id || latest.created_at;
           if (notificationId && lastNotificationId !== notificationId) {
-            // New notification
             lastNotificationId = notificationId;
             const title = 'CampusSense Alert';
             const body = latest.message || 'New sensor reading available';
-            new Notification(title, { body, icon: '/favicon.ico' }); // optional icon
+            new Notification(title, { body, icon: '/favicon.ico' });
           }
         }
       } catch (err) {
@@ -1376,7 +1403,6 @@
       }
     }
 
-    // Initial UI update
     updateNotificationUI();
 
     // ----- initial load & intervals -----
@@ -1384,11 +1410,9 @@
       await refreshAllData();
       await refreshGraph();
       await loadReportTimes();
-      setInterval(refreshAllData, 7000);
+      setInterval(refreshAllData, 5000); // 5 seconds
       setInterval(refreshGraph, 15000);
-      // Poll for new notifications every 30 seconds (if granted)
       setInterval(checkAndShowNotifications, 30000);
-      // Also check on load
       checkAndShowNotifications();
     });
 
