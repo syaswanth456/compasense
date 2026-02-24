@@ -1,31 +1,17 @@
 // =====================================================
-// Supabase Client (Production Ready)
+// Supabase Client (FINAL PRODUCTION)
 // =====================================================
 
 const { createClient } = require('@supabase/supabase-js');
 
-// =====================================================
-// ENV
-// =====================================================
-
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY; // ⚠️ service role key
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error("❌ Supabase ENV missing");
-}
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY,
+  { auth: { persistSession: false } }
+);
 
 // =====================================================
-// CREATE CLIENT
-// =====================================================
-
-const supabase = createClient(supabaseUrl, supabaseKey, {
-  auth: { persistSession: false }
-});
-
-// =====================================================
-// 📡 SENSOR DATA
-// Table: sensor_data
+// SENSOR DATA
 // =====================================================
 
 async function insertSensorData(data) {
@@ -69,22 +55,19 @@ async function getLatestSensorData() {
 }
 
 // =====================================================
-// 🔔 WEB NOTIFICATIONS
-// Table: notifications
+// WEB NOTIFICATIONS
 // =====================================================
 
 async function insertWebNotification(title, message, type = 'info') {
   try {
     const { error } = await supabase
       .from('notifications')
-      .insert([
-        {
-          title,
-          message,
-          type,
-          is_read: false
-        }
-      ]);
+      .insert([{
+        title,
+        message,
+        type,
+        is_read: false
+      }]);
 
     if (error) {
       console.error('❌ Notification insert error:', error.message);
@@ -126,21 +109,11 @@ async function markNotificationRead(id) {
       .update({ is_read: true })
       .eq('id', id);
 
-    if (error) {
-      console.error('❌ Notification update error:', error.message);
-      return false;
-    }
-
-    return true;
-  } catch (err) {
-    console.error('❌ Notification update exception:', err.message);
+    return !error;
+  } catch {
     return false;
   }
 }
-
-// =====================================================
-// EXPORTS
-// =====================================================
 
 module.exports = {
   supabase,
