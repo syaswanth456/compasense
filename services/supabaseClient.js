@@ -242,10 +242,10 @@ async function getOrCreateAppSettingsRow() {
   return inserted || insertPayload;
 }
 
-function getVapidConfigFromSettings(row) {
-  const publicKey = String(row?.vapid_public_key || process.env.VAPID_PUBLIC_KEY || '').trim();
-  const privateKey = String(row?.vapid_private_key || process.env.VAPID_PRIVATE_KEY || '').trim();
-  const subject = String(row?.vapid_subject || process.env.VAPID_SUBJECT || DEFAULT_VAPID_SUBJECT).trim();
+function getVapidConfigFromEnv() {
+  const publicKey = String(process.env.VAPID_PUBLIC_KEY || '').trim();
+  const privateKey = String(process.env.VAPID_PRIVATE_KEY || '').trim();
+  const subject = String(process.env.VAPID_SUBJECT || DEFAULT_VAPID_SUBJECT).trim();
   if (!publicKey || !privateKey) return null;
   return { publicKey, privateKey, subject };
 }
@@ -261,8 +261,7 @@ function configureWebPush(vapidConfig) {
 }
 
 async function getVapidPublicKey() {
-  const row = await getOrCreateAppSettingsRow();
-  const key = String(row?.vapid_public_key || process.env.VAPID_PUBLIC_KEY || '').trim();
+  const key = String(process.env.VAPID_PUBLIC_KEY || '').trim();
   if (!key) throw makeHttpError(503, 'VAPID public key is not configured');
   return key;
 }
@@ -331,8 +330,7 @@ async function getActivePushSubscriptions() {
 }
 
 async function sendWebPushNotification({ title, message, type = 'info', url = '/' }) {
-  const settings = await getOrCreateAppSettingsRow();
-  const vapidConfig = getVapidConfigFromSettings(settings);
+  const vapidConfig = getVapidConfigFromEnv();
   if (!vapidConfig) {
     console.warn('[web-push] VAPID keys missing; skipping push send');
     return { sent: 0, failed: 0 };
