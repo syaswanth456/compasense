@@ -1,5 +1,5 @@
 // =====================================================
-// MQTT Client (HiveMQ Cloud - Production)
+// MQTT Client (Smart Alerts)
 // =====================================================
 
 const mqtt = require('mqtt');
@@ -8,97 +8,68 @@ const {
   insertWebNotification
 } = require('./supabaseClient');
 
-let client = null;
+const { getBotInstance } = require('./telegramBot');
+
+let lastAlertTime = 0;
 
 function startMqttClient() {
-  try {
-    const brokerUrl = process.env.MQTT_BROKER_URL;
-    const username = process.env.MQTT_USERNAME;
-    const password = process.env.MQTT_PASSWORD;
-    const topic = process.env.MQTT_TOPIC || '#';
+  console.log("📡 Connecting MQTT...");
 
-    if (!brokerUrl) {
-      console.warn("⚠️ MQTT URL missing — MQTT disabled");
-      return;
-    }
+  const client = mqtt.connect(process.env.MQTT_BROKER_URL, {
+    username: process.env.MQTT_USERNAME,
+    password: process.env.MQTT_PASSWORD
+  });
 
-    console.log("📡 Connecting to MQTT broker...");
+  client.on('connect', () => {
+    console.log("✅ MQTT connected");
+    client.subscribe(process.env.MQTT_TOPIC);
+  });
 
-    client = mqtt.connect(brokerUrl, {
-      username,
-      password,
-      reconnectPeriod: 5000,
-      connectTimeout: 30 * 1000,
-      clean: true
-    });
+  client.on('message', async (topic, payload) => {
+    try {
+      console.log("📨 MQTT message received");
 
-    // ===============================
-    // CONNECT
-    // ===============================
-    client.on('connect', () => {
-      console.log("✅ MQTT Connected");
+      const r = JSON.parse(payload.toString());
 
-      client.subscribe(topic, err => {
-        if (err) {
-          console.error("❌ MQTT subscribe error:", err.message);
-        } else {
-          console.log("📡 Subscribed to:", topic);
-        }
-      });
-    });
+      const data = {
+        bmp_temp: r.bmp_temp,
+        dht_temp: r.dht_temp,
+        humidity: r.humidity,
+        pressure: r.pressure,
+        co2_ppm: r.co2_ppm,
+        uv_index: r.uv_index,
+        light_pcnt: r.light_pcnt,
+        rain_pcnt: r.rain_pcnt
+      };
 
-    // ===============================
-    // MESSAGE
-    // ===============================
-    client.on('message', async (topic, payload) => {
-      try {
-        const raw = payload.toString();
-        console.log("📨 MQTT message received");
+      await insertSensorData(data);
 
-        const r = JSON.parse(raw);
+      // 🚨 anti-spam (30 sec minimum)
+      const now = Date.now();
+      if (now - lastAlertTime < 30000) return;
 
-        // 🔥 Map ESP → DB
-        const dataToInsert = {
-          bmp_temp: r.bmp_temp ?? null,
-          dht_temp: r.dht_temp ?? null,
-          humidity: r.humidity ?? null,
-          pressure: r.pressure ?? null,
-          co2_ppm: r.co2_ppm ?? null,
-          uv_index: r.uv_index ?? null,
-          light_pcnt: r.light_pcnt ?? null,
-          rain_pcnt: r.rain_pcnt ?? null
-        };
+      if (data.co2_ppm > 2000) {
+        lastAlertTime = now;
 
-        const ok = await insertSensorData(dataToInsert);
+        await insertWebNotification(
+          "⚠️ High CO₂",
+          `CO₂ reached ${data.co2_ppm}`,
+          "alert"
+        );
 
-        // 🔔 Create web notification on success
-        if (ok) {
-          await insertWebNotification(
-            "New Sensor Reading",
-            "Fresh environmental data received",
-            "info"
+        const bot = getBotInstance();
+        if (bot && process.env.TELEGRAM_CHAT_ID) {
+          await bot.sendMessage(
+            process.env.TELEGRAM_CHAT_ID,
+            `⚠️ High CO₂: ${data.co2_ppm}`
           );
         }
-
-      } catch (err) {
-        console.error("❌ MQTT message error:", err.message);
       }
-    });
 
-    // ===============================
-    // ERROR HANDLING
-    // ===============================
-    client.on('error', err => {
+    } catch (err) {
       console.error("❌ MQTT error:", err.message);
-    });
-
-    client.on('close', () => {
-      console.warn("⚠️ MQTT connection closed — retrying...");
-    });
-
-  } catch (err) {
-    console.error("❌ MQTT start failed:", err.message);
-  }
+    }
+  });
 }
 
 module.exports = { startMqttClient };
