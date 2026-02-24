@@ -1344,7 +1344,7 @@
 
     // ----- Browser Notification Handling -----
     const permissionContainer = document.getElementById('notificationPermissionContainer');
-    let lastNotificationId = null;
+    let lastNotificationId = null; // prevent duplicate spam
 
     function updateNotificationUI() {
       if (!('Notification' in window)) {
@@ -1391,6 +1391,7 @@
         if (Array.isArray(data) && data.length > 0) {
           const latest = data[0];
           const notificationId = latest.id || latest.created_at;
+          // Only show if this is a new notification
           if (notificationId && lastNotificationId !== notificationId) {
             lastNotificationId = notificationId;
             const title = 'CampusSense Alert';
