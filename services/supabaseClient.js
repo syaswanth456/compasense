@@ -9,6 +9,7 @@
 // =====================================================
 
 const { createClient } = require('@supabase/supabase-js');
+const webPush = require('web-push');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -23,6 +24,7 @@ const DEFAULT_ALERT_RATE = 'immediate';
 const DEFAULT_REPORT_TIMES = ['09:00', '12:00', '18:00'];
 const ALLOWED_ALERT_RATES = new Set(['immediate', '15min', '30min', 'hourly']);
 const TIME_REGEX = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/;
+const DEFAULT_VAPID_SUBJECT = 'mailto:admin@campussense.local';
 
 const DEFAULT_THRESHOLD_ROWS = [
   { metric: 'aqi', threshold_value: 450, alert_if_above: true, description: 'Air quality threshold' },
@@ -205,6 +207,155 @@ async function getOrCreateAppSettingsRow() {
   return inserted || insertPayload;
 }
 
+function getVapidConfigFromSettings(row) {
+  const publicKey = String(row?.vapid_public_key || process.env.VAPID_PUBLIC_KEY || '').trim();
+  const privateKey = String(row?.vapid_private_key || process.env.VAPID_PRIVATE_KEY || '').trim();
+  const subject = String(row?.vapid_subject || process.env.VAPID_SUBJECT || DEFAULT_VAPID_SUBJECT).trim();
+  if (!publicKey || !privateKey) return null;
+  return { publicKey, privateKey, subject };
+}
+
+function configureWebPush(vapidConfig) {
+  try {
+    webPush.setVapidDetails(vapidConfig.subject, vapidConfig.publicKey, vapidConfig.privateKey);
+    return true;
+  } catch (err) {
+    console.error('[web-push] VAPID configure failed:', err.message);
+    return false;
+  }
+}
+
+async function getVapidPublicKey() {
+  const row = await getOrCreateAppSettingsRow();
+  const key = String(row?.vapid_public_key || process.env.VAPID_PUBLIC_KEY || '').trim();
+  if (!key) throw makeHttpError(503, 'VAPID public key is not configured');
+  return key;
+}
+
+async function savePushSubscription({ userId, subscription }) {
+  if (!subscription || !subscription.endpoint || !subscription.keys) {
+    throw makeHttpError(400, 'Invalid push subscription payload');
+  }
+
+  const endpoint = String(subscription.endpoint).trim();
+  const p256dh = String(subscription.keys.p256dh || '').trim();
+  const auth = String(subscription.keys.auth || '').trim();
+  if (!endpoint || !p256dh || !auth) {
+    throw makeHttpError(400, 'Push subscription endpoint/keys are required');
+  }
+
+  const payload = {
+    user_id: String(userId || DEFAULT_USER_ID).trim() || DEFAULT_USER_ID,
+    endpoint,
+    p256dh,
+    auth,
+    is_active: true,
+    updated_at: new Date().toISOString()
+  };
+
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .upsert([payload], { onConflict: 'endpoint' });
+
+  if (error) {
+    if (isMissingTableError(error, 'push_subscriptions')) {
+      throw makeHttpError(503, 'push_subscriptions table is missing');
+    }
+    throw error;
+  }
+  return true;
+}
+
+async function deactivatePushSubscription(endpoint) {
+  const cleanEndpoint = String(endpoint || '').trim();
+  if (!cleanEndpoint) return false;
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq('endpoint', cleanEndpoint);
+
+  if (error && !isMissingTableError(error, 'push_subscriptions')) {
+    console.warn('[web-push] deactivate subscription failed:', error.message);
+  }
+  return true;
+}
+
+async function getActivePushSubscriptions() {
+  const { data, error } = await supabase
+    .from('push_subscriptions')
+    .select('id, endpoint, p256dh, auth, is_active')
+    .eq('is_active', true);
+
+  if (error) {
+    if (isMissingTableError(error, 'push_subscriptions')) return [];
+    console.warn('[web-push] fetch active subscriptions failed:', error.message);
+    return [];
+  }
+
+  return (data || []).filter((s) => s.endpoint && s.p256dh && s.auth);
+}
+
+async function sendWebPushNotification({ title, message, type = 'info', url = '/' }) {
+  const settings = await getOrCreateAppSettingsRow();
+  const vapidConfig = getVapidConfigFromSettings(settings);
+  if (!vapidConfig) {
+    console.warn('[web-push] VAPID keys missing; skipping push send');
+    return { sent: 0, failed: 0 };
+  }
+
+  if (!configureWebPush(vapidConfig)) return { sent: 0, failed: 0 };
+
+  const subscriptions = await getActivePushSubscriptions();
+  if (subscriptions.length === 0) return { sent: 0, failed: 0 };
+
+  const payload = JSON.stringify({
+    title,
+    body: message,
+    icon: '/favicon.ico',
+    badge: '/favicon.ico',
+    type,
+    url
+  });
+
+  let sent = 0;
+  let failed = 0;
+
+  for (const sub of subscriptions) {
+    try {
+      await webPush.sendNotification(
+        {
+          endpoint: sub.endpoint,
+          keys: {
+            p256dh: sub.p256dh,
+            auth: sub.auth
+          }
+        },
+        payload
+      );
+      sent += 1;
+      await supabase
+        .from('push_subscriptions')
+        .update({ last_success_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('id', sub.id);
+    } catch (err) {
+      failed += 1;
+      console.warn('[web-push] send failed:', err.statusCode || '', err.message);
+
+      const status = Number(err?.statusCode);
+      if (status === 404 || status === 410) {
+        await deactivatePushSubscription(sub.endpoint);
+      } else {
+        await supabase
+          .from('push_subscriptions')
+          .update({ last_error: String(err.message || 'send failed').slice(0, 500), updated_at: new Date().toISOString() })
+          .eq('id', sub.id);
+      }
+    }
+  }
+
+  return { sent, failed };
+}
+
 // =====================================================
 // alert_thresholds
 // =====================================================
@@ -353,6 +504,11 @@ async function insertWebNotification(title, message, type = 'info') {
       console.error('[notifications] insert failed:', error.message);
       return false;
     }
+    await sendWebPushNotification({
+      title: title || 'CampusSense Alert',
+      message: message || 'New update available',
+      type
+    });
     return true;
   } catch (err) {
     console.error('[notifications] insert exception:', err.message);
@@ -665,6 +821,10 @@ module.exports = {
   getNotificationSettings,
   setNotificationSettings,
   processThresholdAlerts,
+  getVapidPublicKey,
+  savePushSubscription,
+  deactivatePushSubscription,
+  sendWebPushNotification,
   upsertTelegramSubscriber,
   setTelegramSubscription,
   getActiveTelegramSubscribers,

@@ -25,6 +25,9 @@ const {
   setThresholdSettings,
   getNotificationSettings,
   setNotificationSettings,
+  getVapidPublicKey,
+  savePushSubscription,
+  deactivatePushSubscription,
   upsertTelegramSubscriber,
   setTelegramSubscription,
   buildShareLinks
@@ -151,6 +154,43 @@ app.get('/api/share-link', async (req, res) => {
   } catch (err) {
     console.error('[api/share-link] failed:', err.message);
     res.status(500).json({ error: 'Failed to build share link' });
+  }
+});
+
+app.get('/api/push/vapid-public-key', async (_req, res) => {
+  try {
+    const key = await getVapidPublicKey();
+    res.json({ publicKey: key });
+  } catch (err) {
+    const status = err?.statusCode === 503 ? 503 : 500;
+    const message = status === 503 ? err.message : 'Failed to fetch VAPID public key';
+    if (status === 500) console.error('[api/push/vapid-public-key] failed:', err.message);
+    res.status(status).json({ error: message });
+  }
+});
+
+app.post('/api/push/subscribe', async (req, res) => {
+  try {
+    await savePushSubscription({
+      userId: resolveUserId(req),
+      subscription: req.body?.subscription
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    const status = err?.statusCode === 400 || err?.statusCode === 503 ? err.statusCode : 500;
+    const message = status === 500 ? 'Failed to save push subscription' : err.message;
+    if (status === 500) console.error('[api/push/subscribe] failed:', err.message);
+    res.status(status).json({ error: message });
+  }
+});
+
+app.post('/api/push/unsubscribe', async (req, res) => {
+  try {
+    await deactivatePushSubscription(req.body?.endpoint);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[api/push/unsubscribe] failed:', err.message);
+    res.status(500).json({ error: 'Failed to unsubscribe push endpoint' });
   }
 });
 

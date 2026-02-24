@@ -1401,6 +1401,65 @@
     // ----- Browser Notification Handling -----
     const permissionContainer = document.getElementById('notificationPermissionContainer');
     let lastNotificationId = null; // prevent duplicate spam
+    let serviceWorkerRegistration = null;
+
+    function urlBase64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - base64String.length % 4) % 4);
+      const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const rawData = window.atob(base64);
+      const outputArray = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+      return outputArray;
+    }
+
+    async function getServiceWorkerRegistration() {
+      if (!('serviceWorker' in navigator)) return null;
+      if (serviceWorkerRegistration) return serviceWorkerRegistration;
+      try {
+        serviceWorkerRegistration = await navigator.serviceWorker.register('/sw.js');
+        return serviceWorkerRegistration;
+      } catch (err) {
+        console.warn('Service worker registration failed:', err);
+        return null;
+      }
+    }
+
+    async function fetchVapidPublicKey() {
+      const response = await fetch('/api/push/vapid-public-key');
+      if (!response.ok) throw new Error(`VAPID key fetch failed: HTTP ${response.status}`);
+      const data = await response.json();
+      const key = String(data.publicKey || '').trim();
+      if (!key) throw new Error('VAPID public key is empty');
+      return key;
+    }
+
+    async function subscribeToPush() {
+      const registration = await getServiceWorkerRegistration();
+      if (!registration || !('PushManager' in window)) {
+        console.warn('Push messaging not supported in this browser');
+        return false;
+      }
+
+      const vapidPublicKey = await fetchVapidPublicKey();
+      let subscription = await registration.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
+        });
+      }
+
+      const subJson = subscription.toJSON();
+      const response = await fetch(`/api/push/subscribe?user_id=${encodeURIComponent(activeUserId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subscription: subJson })
+      });
+      if (!response.ok) {
+        throw new Error(`Push subscription save failed: HTTP ${response.status}`);
+      }
+      return true;
+    }
 
     function updateNotificationUI() {
       if (!('Notification' in window)) {
@@ -1410,6 +1469,9 @@
       const permission = Notification.permission;
       if (permission === 'granted') {
         permissionContainer.innerHTML = '';
+        subscribeToPush().catch((err) => {
+          console.warn('Auto push subscription sync failed:', err);
+        });
       } else {
         const isDenied = permission === 'denied';
         const btnHtml = `
@@ -1425,12 +1487,16 @@
             try {
               const result = await Notification.requestPermission();
               if (result === 'granted') {
+                await subscribeToPush();
+                showToast('Notifications enabled', 'success');
                 updateNotificationUI();
               } else {
                 updateNotificationUI();
               }
             } catch (err) {
               console.warn('Notification permission request failed', err);
+              showToast('Could not enable push notifications', 'error');
+              updateNotificationUI();
             }
           });
         }
@@ -1441,6 +1507,11 @@
       if (!('Notification' in window) || Notification.permission !== 'granted') return;
 
       try {
+        const registration = await getServiceWorkerRegistration();
+        const pushSubscription = registration && registration.pushManager
+          ? await registration.pushManager.getSubscription()
+          : null;
+
         const response = await fetch(`/api/notifications?user_id=${encodeURIComponent(activeUserId)}`);
         if (!response.ok) throw new Error('Failed to fetch notifications');
         const data = await response.json();
@@ -1452,7 +1523,9 @@
             lastNotificationId = notificationId;
             const title = 'CampusSense Alert';
             const body = latest.message || 'New sensor reading available';
-            new Notification(title, { body, icon: '/favicon.ico' });
+            if (!pushSubscription) {
+              new Notification(title, { body, icon: '/favicon.ico' });
+            }
             showToast(body, latest.type === 'alert' ? 'error' : 'success');
           }
         }
@@ -1526,6 +1599,7 @@
 
     // ----- initial load & intervals -----
     window.addEventListener('load', async () => {
+      await getServiceWorkerRegistration();
       await refreshAllData();
       await refreshGraph();
       await loadReportTimes();
