@@ -1401,6 +1401,7 @@
     // ----- Browser Notification Handling -----
     const permissionContainer = document.getElementById('notificationPermissionContainer');
     let lastNotificationId = null; // prevent duplicate spam
+    let notificationBaselineReady = false;
     let serviceWorkerRegistration = null;
 
     function urlBase64ToUint8Array(base64String) {
@@ -1515,19 +1516,29 @@
         const response = await fetch(`/api/notifications?user_id=${encodeURIComponent(activeUserId)}`);
         if (!response.ok) throw new Error('Failed to fetch notifications');
         const data = await response.json();
-        if (Array.isArray(data) && data.length > 0) {
-          const latest = data[0];
-          const notificationId = latest.id || latest.created_at;
-          // Only show if this is a new notification
-          if (notificationId && lastNotificationId !== notificationId) {
-            lastNotificationId = notificationId;
-            const title = 'CampusSense Alert';
-            const body = latest.message || 'New sensor reading available';
-            if (!pushSubscription) {
-              new Notification(title, { body, icon: '/favicon.ico' });
-            }
-            showToast(body, latest.type === 'alert' ? 'error' : 'success');
+        if (!Array.isArray(data) || data.length === 0) {
+          notificationBaselineReady = true;
+          return;
+        }
+
+        const latest = data[0];
+        const notificationId = latest.id || latest.created_at;
+        if (!notificationBaselineReady) {
+          // Avoid replaying historical notifications on first page load/refresh.
+          lastNotificationId = notificationId || null;
+          notificationBaselineReady = true;
+          return;
+        }
+
+        // Only show if this is a new notification
+        if (notificationId && lastNotificationId !== notificationId) {
+          lastNotificationId = notificationId;
+          const title = 'CampusSense Alert';
+          const body = latest.message || 'New update available';
+          if (!pushSubscription) {
+            new Notification(title, { body, icon: '/favicon.ico' });
           }
+          showToast(body, latest.type === 'alert' ? 'error' : 'success');
         }
       } catch (err) {
         console.warn('Failed to check notifications', err);

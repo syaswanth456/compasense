@@ -1,14 +1,11 @@
 // =====================================================
-// MQTT Client (sensor_data + notifications alert flow)
+// MQTT Client (sensor_data ingest only)
 // =====================================================
 
 const mqtt = require('mqtt');
 const {
-  insertSensorData,
-  processThresholdAlerts,
-  getActiveTelegramSubscribers
+  insertSensorData
 } = require('./supabaseClient');
-const { getBotInstance } = require('./telegramBot');
 
 function startMqttClient() {
   console.log('[mqtt] connecting...');
@@ -38,29 +35,7 @@ function startMqttClient() {
       };
 
       await insertSensorData(data);
-
-      const alertResult = await processThresholdAlerts({ sensorData: data });
-      if (alertResult.triggered) {
-        console.log('[alerts] sent:', alertResult.message);
-        const bot = getBotInstance();
-        if (bot) {
-          const subscribers = await getActiveTelegramSubscribers();
-          if (subscribers.length > 0) {
-            for (const chatId of subscribers) {
-              try {
-                await bot.sendMessage(chatId, `CampusSense Alert\n${alertResult.message}`);
-              } catch (sendErr) {
-                console.warn(`[telegram] send failed for chat ${chatId}:`, sendErr.message);
-              }
-            }
-          } else if (process.env.TELEGRAM_CHAT_ID) {
-            // Backward-compatible fallback for single-recipient mode.
-            await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, `CampusSense Alert\n${alertResult.message}`);
-          }
-        }
-      } else {
-        console.log('[alerts] skipped:', alertResult.reason);
-      }
+      console.log('[mqtt] sensor data saved');
     } catch (err) {
       console.error('[mqtt] message handling failed:', err.message);
     }

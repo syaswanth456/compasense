@@ -98,6 +98,41 @@ function getCurrentHHMM(timezone) {
   return fmt.format(new Date());
 }
 
+function getCurrentDateYMD(timezone) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    timeZone: timezone || DEFAULT_TIMEZONE
+  }).formatToParts(new Date());
+  const map = {};
+  for (const part of parts) map[part.type] = part.value;
+  return `${map.year}-${map.month}-${map.day}`;
+}
+
+function formatReading(value, unit = '') {
+  const n = safeNumber(value);
+  if (!Number.isFinite(n)) return 'N/A';
+  const rounded = Math.round(n * 10) / 10;
+  return `${rounded}${unit}`;
+}
+
+function buildScheduledReportMessage(latest, { nowHHMM, dateYMD, timezone }) {
+  if (!latest) {
+    return `Scheduled update (${nowHHMM}, ${timezone}) on ${dateYMD}: no sensor data available yet.`;
+  }
+
+  return [
+    `Scheduled update (${nowHHMM}, ${timezone})`,
+    `Temp ${formatReading(latest.bmp_temp, 'C')}`,
+    `Humidity ${formatReading(latest.humidity, '%')}`,
+    `Pressure ${formatReading(latest.pressure, ' hPa')}`,
+    `AQI ${formatReading(latest.aqi ?? latest.co2_ppm)}`,
+    `UV ${formatReading(latest.uv ?? latest.uv_index)}`,
+    `Rain ${formatReading(latest.rain_percentage ?? latest.rain_pcnt, '%')}`
+  ].join(' | ');
+}
+
 function getCooldownMs(alertRate) {
   switch (alertRate) {
     case 'immediate':
@@ -658,7 +693,59 @@ async function setNotificationSettings(payload) {
 }
 
 // =====================================================
-// Alert trigger engine
+// Scheduled report engine
+// =====================================================
+
+async function wasScheduledReportAlreadySent(dateYMD, hhmm) {
+  const title = `Scheduled Report ${dateYMD} ${hhmm}`;
+  const { data, error } = await supabase
+    .from('notifications')
+    .select('id')
+    .eq('type', 'report')
+    .eq('title', title)
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (error) {
+    console.warn('[reports] dedupe check failed; skipping send this tick:', error.message);
+    return true;
+  }
+  return Array.isArray(data) && data.length > 0;
+}
+
+async function processScheduledReportDispatch() {
+  const prefs = await getNotificationSettings();
+  const nowHHMM = getCurrentHHMM(prefs.timezone);
+  const isDue = Array.isArray(prefs.report_times) && prefs.report_times.includes(nowHHMM);
+  if (!isDue) {
+    return { sent: false, reason: 'not-due-minute', nowHHMM };
+  }
+
+  const dateYMD = getCurrentDateYMD(prefs.timezone);
+  if (await wasScheduledReportAlreadySent(dateYMD, nowHHMM)) {
+    return { sent: false, reason: 'already-sent', nowHHMM, dateYMD };
+  }
+
+  const latest = await getLatestSensorData();
+  const title = `Scheduled Report ${dateYMD} ${nowHHMM}`;
+  const message = buildScheduledReportMessage(latest, { nowHHMM, dateYMD, timezone: prefs.timezone });
+  const ok = await insertWebNotification(title, message, 'report');
+  if (!ok) {
+    return { sent: false, reason: 'insert-failed', nowHHMM, dateYMD };
+  }
+
+  return {
+    sent: true,
+    reason: 'sent',
+    nowHHMM,
+    dateYMD,
+    title,
+    message
+  };
+}
+
+// =====================================================
+// Threshold alert engine (kept for compatibility, currently disabled in MQTT flow)
 // =====================================================
 
 async function wasAlertRecentlySent(cooldownMs) {
@@ -820,6 +907,7 @@ module.exports = {
   setThresholdSettings,
   getNotificationSettings,
   setNotificationSettings,
+  processScheduledReportDispatch,
   processThresholdAlerts,
   getVapidPublicKey,
   savePushSubscription,

@@ -25,9 +25,11 @@ const {
   setThresholdSettings,
   getNotificationSettings,
   setNotificationSettings,
+  processScheduledReportDispatch,
   getVapidPublicKey,
   savePushSubscription,
   deactivatePushSubscription,
+  getActiveTelegramSubscribers,
   upsertTelegramSubscriber,
   setTelegramSubscription,
   buildShareLinks
@@ -49,6 +51,40 @@ function resolveOrigin(req) {
   const host = req.get('host');
   if (!host) return process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
   return `${req.protocol}://${host}`;
+}
+
+let scheduledReportTickBusy = false;
+async function runScheduledReportTick() {
+  if (scheduledReportTickBusy) return;
+  scheduledReportTickBusy = true;
+  try {
+    const result = await processScheduledReportDispatch();
+    if (!result?.sent) return;
+
+    console.log(`[reports] sent ${result.dateYMD} ${result.nowHHMM}`);
+    const bot = getBotInstance();
+    if (!bot) return;
+
+    const subscribers = await getActiveTelegramSubscribers();
+    if (subscribers.length > 0) {
+      for (const chatId of subscribers) {
+        try {
+          await bot.sendMessage(chatId, `CampusSense Report\n${result.message}`);
+        } catch (sendErr) {
+          console.warn(`[telegram] report send failed for chat ${chatId}:`, sendErr.message);
+        }
+      }
+      return;
+    }
+
+    if (process.env.TELEGRAM_CHAT_ID) {
+      await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, `CampusSense Report\n${result.message}`);
+    }
+  } catch (err) {
+    console.error('[reports] scheduler tick failed:', err.message);
+  } finally {
+    scheduledReportTickBusy = false;
+  }
 }
 
 // ===============================
@@ -235,6 +271,8 @@ app.post('/api/telegram-webhook', async (req, res) => {
 function startServer() {
   startTelegramBot();
   startMqttClient();
+  runScheduledReportTick();
+  setInterval(runScheduledReportTick, 5000);
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[server] running on ${PORT}`);
