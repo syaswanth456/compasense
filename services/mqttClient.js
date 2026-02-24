@@ -1,18 +1,17 @@
 // =====================================================
-// MQTT Client + Threshold Alert Processor
+// MQTT Client (sensor_data + notifications alert flow)
 // =====================================================
 
 const mqtt = require('mqtt');
 const {
-  DEFAULT_USER_ID,
   insertSensorData,
-  insertSensorLog,
-  processThresholdAlerts
+  processThresholdAlerts,
+  getActiveTelegramSubscribers
 } = require('./supabaseClient');
 const { getBotInstance } = require('./telegramBot');
 
 function startMqttClient() {
-  console.log('[mqtt] connecting to broker...');
+  console.log('[mqtt] connecting...');
 
   const client = mqtt.connect(process.env.MQTT_BROKER_URL, {
     username: process.env.MQTT_USERNAME,
@@ -39,29 +38,31 @@ function startMqttClient() {
       };
 
       await insertSensorData(data);
-      await insertSensorLog({
-        userId: DEFAULT_USER_ID,
-        temperature: data.bmp_temp,
-        humidity: data.humidity,
-        pressure: data.pressure
-      });
 
-      const alertResult = await processThresholdAlerts({
-        userId: DEFAULT_USER_ID,
-        sensorData: data
-      });
-
+      const alertResult = await processThresholdAlerts({ sensorData: data });
       if (alertResult.triggered) {
-        console.log('[alerts] threshold alert sent:', alertResult.message);
+        console.log('[alerts] sent:', alertResult.message);
         const bot = getBotInstance();
-        if (bot && process.env.TELEGRAM_CHAT_ID) {
-          await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, `CampusSense Alert\n${alertResult.message}`);
+        if (bot) {
+          const subscribers = await getActiveTelegramSubscribers();
+          if (subscribers.length > 0) {
+            for (const chatId of subscribers) {
+              try {
+                await bot.sendMessage(chatId, `CampusSense Alert\n${alertResult.message}`);
+              } catch (sendErr) {
+                console.warn(`[telegram] send failed for chat ${chatId}:`, sendErr.message);
+              }
+            }
+          } else if (process.env.TELEGRAM_CHAT_ID) {
+            // Backward-compatible fallback for single-recipient mode.
+            await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, `CampusSense Alert\n${alertResult.message}`);
+          }
         }
       } else {
-        console.log('[alerts] no alert sent:', alertResult.reason);
+        console.log('[alerts] skipped:', alertResult.reason);
       }
     } catch (err) {
-      console.error('[mqtt] message processing failed:', err.message);
+      console.error('[mqtt] message handling failed:', err.message);
     }
   });
 }

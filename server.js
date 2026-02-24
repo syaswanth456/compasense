@@ -25,6 +25,8 @@ const {
   setThresholdSettings,
   getNotificationSettings,
   setNotificationSettings,
+  upsertTelegramSubscriber,
+  setTelegramSubscription,
   buildShareLinks
 } = require('./services/supabaseClient');
 
@@ -160,9 +162,27 @@ app.post('/api/telegram-webhook', async (req, res) => {
   const bot = getBotInstance();
   const msg = req.body?.message;
 
-  if (bot && msg?.text === '/status') {
-    const latest = await getLatestSensorData();
-    await bot.sendMessage(msg.chat.id, formatStatus(latest));
+  if (bot && msg?.chat?.id && msg?.text) {
+    const text = String(msg.text).trim().toLowerCase();
+
+    if (text.startsWith('/start')) {
+      await upsertTelegramSubscriber({
+        chatId: msg.chat.id,
+        firstName: msg.chat.first_name,
+        username: msg.chat.username,
+        isSubscribed: true
+      });
+      await bot.sendMessage(
+        msg.chat.id,
+        'Subscribed to CampusSense alerts. Use /status for latest reading or /stop to unsubscribe.'
+      );
+    } else if (text === '/stop') {
+      await setTelegramSubscription(msg.chat.id, false);
+      await bot.sendMessage(msg.chat.id, 'Unsubscribed from CampusSense alerts.');
+    } else if (text === '/status') {
+      const latest = await getLatestSensorData();
+      await bot.sendMessage(msg.chat.id, formatStatus(latest));
+    }
   }
 
   res.sendStatus(200);
