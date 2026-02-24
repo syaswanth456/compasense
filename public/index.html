@@ -661,7 +661,7 @@
       <button class="icon-btn" id="notificationsBtn" aria-label="notifications">
         <i class="fas fa-bell"></i>
       </button>
-      <button class="icon-btn" aria-label="share"><i class="fas fa-paper-plane"></i></button>
+      <button class="icon-btn" id="shareBtn" aria-label="share"><i class="fas fa-paper-plane"></i></button>
     </div>
   </header>
 
@@ -880,6 +880,7 @@
     const rainPctSpan = document.getElementById('rain-pct');
     const brightnessStatusSpan = document.getElementById('brightness-status');
     const brightnessPctSpan = document.getElementById('brightness-pct');
+    const shareBtn = document.getElementById('shareBtn');
 
     // chart
     let chart;
@@ -890,6 +891,33 @@
     let currentRange = '24h';
 
     const toastContainer = document.getElementById('toastContainer');
+
+    function generateUserId() {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return `user-${window.crypto.randomUUID().slice(0, 8)}`;
+      }
+      return `user-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function getOrCreateUserId() {
+      try {
+        const fromQuery = new URLSearchParams(window.location.search).get('user_id');
+        if (fromQuery) {
+          localStorage.setItem('campus_user_id', fromQuery);
+          return fromQuery;
+        }
+        const existing = localStorage.getItem('campus_user_id');
+        if (existing) return existing;
+        const userId = generateUserId();
+        localStorage.setItem('campus_user_id', userId);
+        return userId;
+      } catch (err) {
+        console.warn('Failed to access localStorage, using fallback user id:', err);
+        return 'global-user';
+      }
+    }
+
+    const activeUserId = getOrCreateUserId();
 
     // ----- helper: show toast -----
     function showToast(message, type = 'success') {
@@ -912,6 +940,7 @@
     async function fetchLatestData() {
       try {
         const response = await fetch('/api/data');
+        if (response.status === 204) return null;
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         return {
@@ -929,11 +958,11 @@
 
     async function fetchGraphData(metric, range) {
       try {
-        const url = `/api/graph-data?type=${encodeURIComponent(metric)}&range=${encodeURIComponent(range)}`;
+        const url = `/api/graph-data?type=${encodeURIComponent(metric)}&range=${encodeURIComponent(range)}&user_id=${encodeURIComponent(activeUserId)}`;
         const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const json = await response.json();
-        return json;
+        return Array.isArray(json) ? json : [];
       } catch (err) {
         console.warn('Failed to fetch graph data:', err);
         return [];
@@ -991,19 +1020,25 @@
         let categories = [];
         let seriesData = [];
 
-        if (graphArray && Array.isArray(graphArray) && graphArray.length > 0) {
+        if (Array.isArray(graphArray) && graphArray.length > 0) {
           const formatOptions = currentRange === '5m' ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } :
                                currentRange === '1h' ? { hour: '2-digit', minute: '2-digit' } :
                                { hour: '2-digit', minute: '2-digit' };
-          categories = graphArray.map(item => {
+
+          const sanitized = graphArray
+            .filter(item => item && item.created_at != null && item.value != null && Number.isFinite(Number(item.value)))
+            .map(item => ({
+              created_at: item.created_at,
+              value: Number(item.value)
+            }));
+
+          categories = sanitized.map(item => {
             const d = new Date(item.created_at);
             return d.toLocaleTimeString([], formatOptions);
           });
-          seriesData = graphArray.map(item => item.value);
-          chartEl.classList.remove('empty');
-        } else {
-          chartEl.classList.add('empty');
+          seriesData = sanitized.map(item => item.value);
         }
+        chartEl.classList.toggle('empty', seriesData.length === 0);
 
         const series = [{ name: currentMetric.replace('_', ' ').toUpperCase(), data: seriesData }];
 
@@ -1062,12 +1097,19 @@
           markers: { size: 0, hover: { size: 4 } }
         };
 
-        if (chart) {
-          chart.updateOptions(baseOptions);
-          chart.updateSeries(series);
-        } else {
+        if (!chart) {
           chart = new ApexCharts(chartEl, baseOptions);
           await chart.render();
+        } else {
+          try {
+            chart.updateOptions(baseOptions, true, true);
+            chart.updateSeries(series, true);
+          } catch (chartErr) {
+            console.warn('Chart update failed, recreating chart:', chartErr);
+            await chart.destroy();
+            chart = new ApexCharts(chartEl, baseOptions);
+            await chart.render();
+          }
         }
       } catch (e) {
         console.warn('graph refresh failed', e);
@@ -1127,7 +1169,7 @@
       saveThresholdsBtn.innerHTML = `<span>Loading...</span><div class="spinner"></div>`;
 
       try {
-        const response = await fetch('/api/get-thresholds');
+        const response = await fetch(`/api/get-thresholds?user_id=${encodeURIComponent(activeUserId)}`);
         if (!response.ok) throw new Error('Failed to fetch thresholds');
         const data = await response.json();
         thAqi.value = data.aqi ?? 450;
@@ -1203,7 +1245,7 @@
       saveThresholdsBtn.innerHTML = `<span>Saving...</span><div class="spinner"></div>`;
 
       try {
-        const response = await fetch('/api/set-thresholds', {
+        const response = await fetch(`/api/set-thresholds?user_id=${encodeURIComponent(activeUserId)}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -1236,7 +1278,7 @@
 
     async function loadReportTimes() {
       try {
-        const response = await fetch('/api/get-report-time');
+        const response = await fetch(`/api/get-report-time?user_id=${encodeURIComponent(activeUserId)}`);
         if (!response.ok) throw new Error('Failed to fetch report times');
         const data = await response.json();
         notifPrefs.times = Array.isArray(data.report_times) && data.report_times.length > 0
@@ -1321,19 +1363,23 @@
         return;
       }
       const uniqueTimes = [...new Set(validTimes)];
+      const sortedTimes = [...uniqueTimes].sort();
       
       // Payload: report_times, alert_rate, timezone
       const payload = {
         report_times: uniqueTimes,
         alert_rate: notifRate.value,
-        timezone: "Asia/Kolkata"
+        timezone: "Asia/Kolkata",
+        notification_enabled: true,
+        notify_start_time: sortedTimes[0],
+        notify_end_time: sortedTimes[sortedTimes.length - 1]
       };
 
       saveNotificationBtn.disabled = true;
       saveNotificationBtn.innerHTML = `<span>Saving...</span><div class="spinner"></div>`;
 
       try {
-        const response = await fetch('/api/save-settings', {
+        const response = await fetch(`/api/save-settings?user_id=${encodeURIComponent(activeUserId)}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -1395,7 +1441,7 @@
       if (!('Notification' in window) || Notification.permission !== 'granted') return;
 
       try {
-        const response = await fetch('/api/notifications');
+        const response = await fetch(`/api/notifications?user_id=${encodeURIComponent(activeUserId)}`);
         if (!response.ok) throw new Error('Failed to fetch notifications');
         const data = await response.json();
         if (Array.isArray(data) && data.length > 0) {
@@ -1407,11 +1453,73 @@
             const title = 'CampusSense Alert';
             const body = latest.message || 'New sensor reading available';
             new Notification(title, { body, icon: '/favicon.ico' });
+            showToast(body, latest.type === 'alert' ? 'error' : 'success');
           }
         }
       } catch (err) {
         console.warn('Failed to check notifications', err);
       }
+    }
+
+    async function fetchShareLinks() {
+      const fallbackDashboard = `${window.location.origin}/?user_id=${encodeURIComponent(activeUserId)}`;
+      const fallbackTelegram = `https://t.me/your_bot_username?start=${encodeURIComponent(activeUserId)}`;
+
+      try {
+        const response = await fetch(`/api/share-link?user_id=${encodeURIComponent(activeUserId)}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        return {
+          dashboardLink: data.dashboard_link || fallbackDashboard,
+          telegramDeepLink: data.telegram_deep_link || fallbackTelegram
+        };
+      } catch (err) {
+        console.warn('Failed to fetch share links, using fallback:', err);
+        return {
+          dashboardLink: fallbackDashboard,
+          telegramDeepLink: fallbackTelegram
+        };
+      }
+    }
+
+    async function copyShareText(text) {
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast('Share link copied to clipboard', 'success');
+      } catch (err) {
+        console.warn('Clipboard copy failed:', err);
+        showToast('Unable to copy link automatically', 'error');
+      }
+    }
+
+    async function handleShareClick() {
+      const pendingTab = window.open('about:blank', '_blank', 'noopener');
+      const { dashboardLink, telegramDeepLink } = await fetchShareLinks();
+
+      if (pendingTab) pendingTab.location.href = telegramDeepLink;
+      else window.open(telegramDeepLink, '_blank', 'noopener');
+
+      const shareText = `Monitor my live weather dashboard:\n${dashboardLink}`;
+      if (navigator.share) {
+        try {
+          await navigator.share({
+            title: 'CampusSense Dashboard',
+            text: shareText,
+            url: dashboardLink
+          });
+          showToast('Shared successfully', 'success');
+          return;
+        } catch (err) {
+          if (err && err.name === 'AbortError') return;
+          console.warn('Web Share API failed, using clipboard fallback:', err);
+        }
+      }
+
+      await copyShareText(shareText);
+    }
+
+    if (shareBtn) {
+      shareBtn.addEventListener('click', handleShareClick);
     }
 
     updateNotificationUI();

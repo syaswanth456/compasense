@@ -1,19 +1,18 @@
 // =====================================================
-// MQTT Client (Smart Alerts)
+// MQTT Client + Threshold Alert Processor
 // =====================================================
 
 const mqtt = require('mqtt');
 const {
+  DEFAULT_USER_ID,
   insertSensorData,
-  insertWebNotification
+  insertSensorLog,
+  processThresholdAlerts
 } = require('./supabaseClient');
-
 const { getBotInstance } = require('./telegramBot');
 
-let lastAlertTime = 0;
-
 function startMqttClient() {
-  console.log("📡 Connecting MQTT...");
+  console.log('[mqtt] connecting to broker...');
 
   const client = mqtt.connect(process.env.MQTT_BROKER_URL, {
     username: process.env.MQTT_USERNAME,
@@ -21,53 +20,48 @@ function startMqttClient() {
   });
 
   client.on('connect', () => {
-    console.log("✅ MQTT connected");
+    console.log('[mqtt] connected');
     client.subscribe(process.env.MQTT_TOPIC);
   });
 
-  client.on('message', async (topic, payload) => {
+  client.on('message', async (_topic, payload) => {
     try {
-      console.log("📨 MQTT message received");
-
       const r = JSON.parse(payload.toString());
-
       const data = {
-        bmp_temp: r.bmp_temp,
-        dht_temp: r.dht_temp,
-        humidity: r.humidity,
-        pressure: r.pressure,
-        co2_ppm: r.co2_ppm,
-        uv_index: r.uv_index,
-        light_pcnt: r.light_pcnt,
-        rain_pcnt: r.rain_pcnt
+        bmp_temp: Number(r.bmp_temp),
+        dht_temp: Number(r.dht_temp),
+        humidity: Number(r.humidity),
+        pressure: Number(r.pressure),
+        co2_ppm: Number(r.co2_ppm),
+        uv_index: Number(r.uv_index),
+        light_pcnt: Number(r.light_pcnt),
+        rain_pcnt: Number(r.rain_pcnt)
       };
 
       await insertSensorData(data);
+      await insertSensorLog({
+        userId: DEFAULT_USER_ID,
+        temperature: data.bmp_temp,
+        humidity: data.humidity,
+        pressure: data.pressure
+      });
 
-      // 🚨 anti-spam (30 sec minimum)
-      const now = Date.now();
-      if (now - lastAlertTime < 30000) return;
+      const alertResult = await processThresholdAlerts({
+        userId: DEFAULT_USER_ID,
+        sensorData: data
+      });
 
-      if (data.co2_ppm > 2000) {
-        lastAlertTime = now;
-
-        await insertWebNotification(
-          "⚠️ High CO₂",
-          `CO₂ reached ${data.co2_ppm}`,
-          "alert"
-        );
-
+      if (alertResult.triggered) {
+        console.log('[alerts] threshold alert sent:', alertResult.message);
         const bot = getBotInstance();
         if (bot && process.env.TELEGRAM_CHAT_ID) {
-          await bot.sendMessage(
-            process.env.TELEGRAM_CHAT_ID,
-            `⚠️ High CO₂: ${data.co2_ppm}`
-          );
+          await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, `CampusSense Alert\n${alertResult.message}`);
         }
+      } else {
+        console.log('[alerts] no alert sent:', alertResult.reason);
       }
-
     } catch (err) {
-      console.error("❌ MQTT error:", err.message);
+      console.error('[mqtt] message processing failed:', err.message);
     }
   });
 }
