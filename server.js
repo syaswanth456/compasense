@@ -18,7 +18,11 @@ const { startMqttClient } = require('./services/mqttClient');
 const {
   getLatestSensorData,
   getWebNotifications,
-  markNotificationRead
+  markNotificationRead,
+  getThresholdSettings,
+  setThresholdSettings,
+  getNotificationSettings,
+  setNotificationSettings
 } = require('./services/supabaseClient');
 
 const app = express();
@@ -45,6 +49,50 @@ app.get('/api/notifications', async (req, res) => {
 app.post('/api/notifications/read/:id', async (req, res) => {
   await markNotificationRead(req.params.id);
   res.json({ ok: true });
+});
+
+app.get('/api/get-thresholds', async (req, res) => {
+  try {
+    const data = await getThresholdSettings();
+    res.json(data);
+  } catch (err) {
+    console.error('Failed to get thresholds:', err.message);
+    res.status(500).json({ error: 'Failed to fetch thresholds' });
+  }
+});
+
+app.post('/api/set-thresholds', async (req, res) => {
+  try {
+    const data = await setThresholdSettings(req.body);
+    res.json({ ok: true, data });
+  } catch (err) {
+    const status = err?.statusCode === 400 ? 400 : 500;
+    const message = status === 400 ? err.message : 'Failed to save thresholds';
+    if (status === 500) console.error('Failed to set thresholds:', err.message);
+    res.status(status).json({ error: message });
+  }
+});
+
+app.get('/api/get-report-time', async (req, res) => {
+  try {
+    const data = await getNotificationSettings();
+    res.json(data);
+  } catch (err) {
+    console.error('Failed to get report settings:', err.message);
+    res.status(500).json({ error: 'Failed to fetch report settings' });
+  }
+});
+
+app.post('/api/save-settings', async (req, res) => {
+  try {
+    const data = await setNotificationSettings(req.body);
+    res.json({ ok: true, data });
+  } catch (err) {
+    const status = err?.statusCode === 400 ? 400 : 500;
+    const message = status === 400 ? err.message : 'Failed to save settings';
+    if (status === 500) console.error('Failed to save settings:', err.message);
+    res.status(status).json({ error: message });
+  }
 });
 
 // ===============================

@@ -914,7 +914,13 @@
         const response = await fetch('/api/data');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
-        return data;
+        return {
+          ...data,
+          aqi: data?.aqi ?? data?.co2_ppm,
+          uv: data?.uv ?? data?.uv_index,
+          rain_percentage: data?.rain_percentage ?? data?.rain_pcnt,
+          light_level: data?.light_level ?? data?.light_pcnt
+        };
       } catch (err) {
         console.warn('Failed to fetch latest data:', err);
         return null;
@@ -1208,6 +1214,7 @@
       } catch (err) {
         console.error(err);
         showToast('Failed to save thresholds', 'error');
+      } finally {
         saveThresholdsBtn.disabled = false;
         saveThresholdsBtn.innerHTML = `<span>Save Thresholds</span>`;
       }
@@ -1232,8 +1239,10 @@
         const response = await fetch('/api/get-report-time');
         if (!response.ok) throw new Error('Failed to fetch report times');
         const data = await response.json();
-        notifPrefs.times = data.report_times || ['09:00', '12:00', '18:00'];
-        notifPrefs.rate = data.rate || 'immediate';
+        notifPrefs.times = Array.isArray(data.report_times) && data.report_times.length > 0
+          ? data.report_times
+          : ['09:00', '12:00', '18:00'];
+        notifPrefs.rate = data.alert_rate ?? data.rate ?? 'immediate';
       } catch (err) {
         console.warn('Could not load report times, using defaults:', err);
       }
@@ -1337,6 +1346,7 @@
       } catch (err) {
         console.error(err);
         showToast('Failed to save preferences', 'error');
+      } finally {
         saveNotificationBtn.disabled = false;
         saveNotificationBtn.innerHTML = `<span>Save Preferences</span>`;
       }
