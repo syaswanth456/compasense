@@ -263,6 +263,7 @@
     /* --- trend analysis card --- */
     .trend-card {
       padding: 24px 24px 20px;
+      overflow: hidden;
     }
 
     .trend-header {
@@ -284,6 +285,10 @@
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
+      max-width: 100%;
+      overflow-x: auto;
+      scrollbar-width: thin;
+      padding-bottom: 2px;
     }
 
     .pill {
@@ -312,13 +317,15 @@
 
     .time-pills {
       display: flex;
+      flex-wrap: wrap;
       gap: 8px;
       margin-bottom: 20px;
     }
 
     .chart-container {
       width: 100%;
-      height: 320px;
+      height: clamp(240px, 42vw, 360px);
+      min-height: 240px;
       overflow: hidden;
       position: relative;
     }
@@ -621,7 +628,7 @@
     @media (max-width: 900px) {
       .metrics-grid { gap: 16px; }
       .big-number { font-size: 2.5rem; }
-      .chart-container { height: 280px; }
+      .chart-container { height: clamp(230px, 45vw, 300px); min-height: 230px; }
     }
 
     @media (max-width: 700px) {
@@ -629,8 +636,10 @@
       .metrics-grid { grid-template-columns: repeat(2, 1fr); }
       .conditions-card { flex-direction: column; align-items: flex-start; gap: 20px; }
       .trend-header { flex-direction: column; align-items: flex-start; }
+      .metric-pills { width: 100%; }
+      .time-pills { margin-bottom: 14px; }
       .modal { padding: 24px 20px; }
-      .chart-container { height: 240px; }
+      .chart-container { height: clamp(220px, 52vw, 260px); min-height: 220px; }
       .header-right {
         width: 100%;
         justify-content: flex-end;
@@ -644,7 +653,8 @@
       .metrics-grid { grid-template-columns: 1fr; }
       .header { flex-direction: column; align-items: flex-start; gap: 16px; }
       .header-right { align-self: flex-end; width: auto; }
-      .chart-container { height: 200px; }
+      .pill { padding: 7px 12px; font-size: 0.78rem; }
+      .chart-container { height: clamp(210px, 62vw, 240px); min-height: 210px; }
     }
   </style>
 </head>
@@ -830,6 +840,7 @@
     <button class="save-btn" id="saveThresholdsBtn">
       <span>Save Thresholds</span>
     </button>
+    <div id="thresholdStatusText" style="margin-top:10px; font-size:0.85rem; color:#64748b;"></div>
   </div>
 </div>
 
@@ -1017,6 +1028,7 @@
     async function refreshGraph() {
       try {
         const graphArray = await fetchGraphData(currentMetric, currentRange);
+        const isMobile = window.matchMedia('(max-width: 700px)').matches;
         let categories = [];
         let seriesData = [];
 
@@ -1044,9 +1056,15 @@
 
         const yaxisPadding = (value, isMin) => {
           if (value === undefined || value === null) return undefined;
-          const padding = Math.max(1, Math.abs(value) * 0.1);
+          const padding = Math.max(0.5, Math.abs(value) * 0.06);
           return isMin ? value - padding : value + padding;
         };
+
+        const computedMin = seriesData.length ? Math.min(...seriesData) : undefined;
+        const computedMax = seriesData.length ? Math.max(...seriesData) : undefined;
+        const hasFlatLine = Number.isFinite(computedMin) && Number.isFinite(computedMax) && computedMin === computedMax;
+        const minY = seriesData.length ? (hasFlatLine ? computedMin - 1 : yaxisPadding(computedMin, true)) : undefined;
+        const maxY = seriesData.length ? (hasFlatLine ? computedMax + 1 : yaxisPadding(computedMax, false)) : undefined;
 
         const baseOptions = {
           chart: {
@@ -1066,18 +1084,24 @@
           series: series,
           xaxis: {
             categories: categories,
-            labels: { style: { colors: '#64748b', fontSize: '12px' }, rotate: 0, trim: true, maxHeight: 60 },
+            labels: {
+              style: { colors: '#64748b', fontSize: isMobile ? '10px' : '12px' },
+              rotate: isMobile ? -25 : 0,
+              trim: true,
+              hideOverlappingLabels: true,
+              maxHeight: isMobile ? 42 : 60
+            },
             axisBorder: { show: false },
             axisTicks: { show: false },
-            tickAmount: currentRange === '24h' ? 6 : 6,
+            tickAmount: isMobile ? 4 : 6,
           },
           yaxis: {
-            labels: { style: { colors: '#64748b', fontSize: '12px' } },
+            labels: { style: { colors: '#64748b', fontSize: isMobile ? '10px' : '12px' } },
             forceNiceScale: true,
-            tickAmount: 5,
+            tickAmount: isMobile ? 4 : 5,
             decimalsInFloat: 1,
-            min: (min) => seriesData.length ? yaxisPadding(min, true) : undefined,
-            max: (max) => seriesData.length ? yaxisPadding(max, false) : undefined,
+            min: minY,
+            max: maxY,
           },
           stroke: { curve: 'smooth', width: 3, colors: ['#14b8a6'], lineCap: 'round' },
           fill: {
@@ -1087,7 +1111,7 @@
           grid: {
             borderColor: '#e2e8f0',
             strokeDashArray: 4,
-            padding: { top: 25, right: 20, bottom: 25, left: 15 },
+            padding: { top: 12, right: 10, bottom: 8, left: 8 },
             xaxis: { lines: { show: true } },
             yaxis: { lines: { show: true } }
           },
@@ -1162,11 +1186,15 @@
     const saveThresholdsBtn = document.getElementById('saveThresholdsBtn');
     const suggestBtn = document.getElementById('suggestBtn');
     const resetBtn = document.getElementById('resetBtn');
+    const thresholdStatusText = document.getElementById('thresholdStatusText');
+    let thresholdsReady = false;
 
     async function openSettingsModal() {
       settingsModal.classList.add('active');
+      thresholdsReady = false;
       saveThresholdsBtn.disabled = true;
       saveThresholdsBtn.innerHTML = `<span>Loading...</span><div class="spinner"></div>`;
+      if (thresholdStatusText) thresholdStatusText.textContent = 'Loading saved thresholds...';
 
       try {
         const response = await fetch(`/api/get-thresholds?user_id=${encodeURIComponent(activeUserId)}`);
@@ -1177,6 +1205,8 @@
         thBmp.value = data.bmp_temp ?? 28.0;
         thPressure.value = data.pressure ?? 990;
         thRain.value = data.rain_percentage ?? 70;
+        thresholdsReady = true;
+        if (thresholdStatusText) thresholdStatusText.textContent = 'Saved thresholds loaded.';
       } catch (err) {
         console.warn('Could not load thresholds, using defaults:', err);
         thAqi.value = 450;
@@ -1184,6 +1214,8 @@
         thBmp.value = 28.0;
         thPressure.value = 990;
         thRain.value = 70;
+        thresholdsReady = true;
+        if (thresholdStatusText) thresholdStatusText.textContent = 'Could not load saved values. Showing defaults.';
       } finally {
         saveThresholdsBtn.disabled = false;
         saveThresholdsBtn.innerHTML = `<span>Save Thresholds</span>`;
@@ -1229,6 +1261,10 @@
     });
 
     saveThresholdsBtn.addEventListener('click', async () => {
+      if (!thresholdsReady) {
+        showToast('Thresholds are still loading. Please wait.', 'error');
+        return;
+      }
       const payload = {
         aqi: parseInt(thAqi.value, 10),
         uv: parseFloat(thUv.value),
@@ -1252,10 +1288,12 @@
         });
         if (!response.ok) throw new Error('Save failed');
         showToast('Thresholds updated successfully', 'success');
+        if (thresholdStatusText) thresholdStatusText.textContent = `Saved at ${new Date().toLocaleTimeString()}`;
         closeSettingsModal();
       } catch (err) {
         console.error(err);
         showToast('Failed to save thresholds', 'error');
+        if (thresholdStatusText) thresholdStatusText.textContent = 'Save failed. Please retry.';
       } finally {
         saveThresholdsBtn.disabled = false;
         saveThresholdsBtn.innerHTML = `<span>Save Thresholds</span>`;

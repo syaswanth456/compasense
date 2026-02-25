@@ -117,6 +117,23 @@ function formatReading(value, unit = '') {
   return `${rounded}${unit}`;
 }
 
+function getMetricMeta(metric) {
+  const byMetric = {
+    aqi: { label: 'AQI', unit: 'ppm', decimals: 0 },
+    uv: { label: 'UV', unit: '', decimals: 1 },
+    bmp_temp: { label: 'BMP Temp', unit: 'C', decimals: 1 },
+    pressure: { label: 'Pressure', unit: 'hPa', decimals: 0 },
+    rain_percentage: { label: 'Rain', unit: '%', decimals: 0 }
+  };
+  return byMetric[metric] || { label: metric, unit: '', decimals: 1 };
+}
+
+function formatMetricValue(value, decimals) {
+  const n = safeNumber(value);
+  if (!Number.isFinite(n)) return 'N/A';
+  return Number(n).toFixed(Math.max(0, decimals));
+}
+
 function buildScheduledReportMessage(latest, { nowHHMM, dateYMD, timezone }) {
   if (!latest) {
     return `Scheduled update (${nowHHMM}, ${timezone}) on ${dateYMD}: no sensor data available yet.`;
@@ -800,7 +817,14 @@ async function processThresholdAlerts({ sensorData }) {
 
   if (fired.length === 0) return { triggered: false, reason: 'no-threshold-crossing' };
 
-  const parts = fired.map((a) => `${a.metric}: ${a.value.toFixed(1)} (${a.alert_if_above ? '>=' : '<='} ${a.threshold})`);
+  const parts = fired.map((a) => {
+    const meta = getMetricMeta(a.metric);
+    const valueText = formatMetricValue(a.value, meta.decimals);
+    const thresholdText = formatMetricValue(a.threshold, meta.decimals);
+    const unitSuffix = meta.unit ? ` ${meta.unit}` : '';
+    const rule = a.alert_if_above ? '>=' : '<=';
+    return `${meta.label}: ${valueText}${unitSuffix} (${rule} ${thresholdText}${unitSuffix})`;
+  });
   const message = `Threshold crossed - ${parts.join(', ')}`;
   await insertWebNotification('Threshold Alert', message, 'alert');
 

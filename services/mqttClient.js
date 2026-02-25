@@ -4,7 +4,8 @@
 
 const mqtt = require('mqtt');
 const {
-  insertSensorData
+  insertSensorData,
+  processThresholdAlerts
 } = require('./supabaseClient');
 
 function startMqttClient() {
@@ -35,6 +36,11 @@ function startMqttClient() {
       };
 
       await insertSensorData(data);
+      try {
+        await processThresholdAlerts({ sensorData: data });
+      } catch (alertErr) {
+        console.error('[mqtt] threshold alert processing failed:', alertErr.message);
+      }
       console.log('[mqtt] sensor data saved');
     } catch (err) {
       console.error('[mqtt] message handling failed:', err.message);
